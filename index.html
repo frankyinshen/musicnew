@@ -1254,6 +1254,7 @@ var _latestPlayRequestUrl = null;
 var _autoNextTimer = null;
 var _consecutiveErrors = 0;
 var _drawChartTimer = null;
+var _lockPlayWatchdogTimer = null; // 【新增】锁屏"假播放"看门狗
 
 var playlists   = {};
 var progressDB  = {};
@@ -1485,12 +1486,13 @@ function setupSlider() {
 function setFill(pct) { fillEl.style.width = pct + '%'; }
 
 function setupAudioEvents() {
-    audio.addEventListener('play',   function() {
+        audio.addEventListener('play',   function() {
         document.getElementById('iconPlay').style.display  = 'none';
         document.getElementById('iconPause').style.display = 'block';
         setCompact(false);
         try { noSleepV.pause(); } catch(e) {} // 播放音频时暂停视频，防止 iOS 抢占 MediaSession 焦点
-        updateMediaPositionState(); // 立即同步锁屏进度状态
+        try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
+        updateMediaPositionState();
     });
     audio.addEventListener('pause',  function() {
         document.getElementById('iconPlay').style.display  = 'block';
@@ -1499,7 +1501,12 @@ function setupAudioEvents() {
         if (isWakeLockEnabled) {
             noSleepV.play().catch(function(){}); // 音频暂停且开启常亮时，恢复无声视频播放
         }
-        updateMediaPositionState(); // 立即同步锁屏进度状态
+        try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
+        updateMediaPositionState(0); // 【关键修复】暂停时把锁屏时钟钉死为 0
+    });
+    audio.addEventListener('waiting', function() {
+        // 【关键修复】缓冲/卡顿时立刻让锁屏时钟停止前进——这是"锁屏按播放后时间在走但没声音"的核心修复点
+        updateMediaPositionState(0);
     });
     audio.addEventListener('ended',  function() {
         clearMediaSession();
@@ -1589,37 +1596,55 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-               ['play', function() {
+                              ['play', function() {
+            // =================================================================
+            // 【终极修复】解决 iOS 锁屏暂停后，SW 休眠导致的“假播放无声”死锁
+            // =================================================================
+            
+            // 1. 主动唤醒：发送一个轻量的真实网络请求，主线程的 fetch 具有最高优先级，能瞬间强行唤醒后台休眠的 Service Worker。
+            fetch('/?wake=' + Date.now()).catch(function(){});
+
+            // 2. 刷新缓冲：原地重置 currentTime。强制 <audio> 内核丢弃之前可能卡死的底层 TCP/Range 连接，重新向刚唤醒的 SW 要数据。
+            if (audio.currentTime > 0) {
+                audio.currentTime = audio.currentTime;
+            }
+
+            var savedTime = audio.currentTime;
+            var origUrl   = _currentTrackOrigUrl || audio.src;
+            var watchUrl  = audio.src;
+
             var playPromise = audio.play();
+
+            // 3. 被动看门狗：play() 可能正常 resolve、'play' 事件也触发了，但底层音频会话并未真正恢复出声。
+            // 短暂延时后校验进度是否真的前进了，没有就强制走"重新加载+恢复播放"。
+            clearTimeout(_lockPlayWatchdogTimer);
+            _lockPlayWatchdogTimer = setTimeout(function() {
+                if (audio.src !== watchUrl) return;   // 期间切歌了，放弃校验
+                if (audio.paused) return;               // 已被暂停或其它逻辑处理
+                if (Math.abs(audio.currentTime - savedTime) < 0.15) {
+                    console.warn('[LockScreen] 检测到假播放，强制重载恢复');
+                    if (!_isResumingFromLock) {
+                        _isResumingFromLock = true;
+                        _doLoadResume(origUrl, savedTime);
+                    }
+                }
+            }, 1200);
+
             if (playPromise !== undefined) {
                 playPromise.catch(function(e) {
                     console.warn('Lock screen play failed:', e.name);
+                    clearTimeout(_lockPlayWatchdogTimer);
                     if (e.name !== 'AbortError') {
-                        // 【关键修复】深度休眠兜底：保存进度，防止 load() 导致进度归零
-                        var savedTime = audio.currentTime;
-                        audio.load();
-                        
-                        // 监听元数据加载完毕后恢复进度并播放
-                        var restoreAndPlay = function() {
-                            audio.removeEventListener('loadedmetadata', restoreAndPlay);
-                            audio.currentTime = savedTime;
-                            audio.play().catch(function(){});
-                        };
-                        audio.addEventListener('loadedmetadata', restoreAndPlay);
-                        
-                        // 终极兜底：防止 iOS 某些情况下不派发 loadedmetadata
-                        setTimeout(function() {
-                            audio.removeEventListener('loadedmetadata', restoreAndPlay);
-                            if (audio.paused) {
-                                audio.currentTime = savedTime;
-                                audio.play().catch(function(){});
-                            }
-                        }, 500);
+                        if (!_isResumingFromLock) {
+                            _isResumingFromLock = true;
+                            _doLoadResume(origUrl, savedTime);
+                        }
                     }
                 });
             }
         }],
         ['pause', function() {
+            clearTimeout(_lockPlayWatchdogTimer);
             audio.pause();
             _wasPlayingBeforeHide = false;
         }],
@@ -1652,12 +1677,12 @@ function clearMediaSession() {
     navigator.mediaSession.metadata = null;
 }
 
-function updateMediaPositionState() {
+function updateMediaPositionState(rateOverride) {
     if (!('mediaSession' in navigator) || !audio.duration || isNaN(audio.duration)) return;
     try {
         navigator.mediaSession.setPositionState({
             duration:     audio.duration,
-            playbackRate: audio.playbackRate,
+            playbackRate: (rateOverride !== undefined) ? rateOverride : audio.playbackRate,
             position:     audio.currentTime
         });
     } catch(e) {}
@@ -1669,6 +1694,7 @@ function playTrack(index) {
     if (index < 0 || index >= playList.length) return;
     
     clearTimeout(_autoNextTimer);
+    clearTimeout(_lockPlayWatchdogTimer);
 
     currentTrackIndex = index;
     var track = playList[index];
@@ -4006,7 +4032,11 @@ audio.addEventListener('playing', function() {
     _consecutiveErrors = 0;
     _audioRetryCount = 0;
     clearTimeout(_audioRetryTimer);
+    clearTimeout(_lockPlayWatchdogTimer);
+    _isResumingFromLock = false;
     setTimeout(_preloadNextTrack, 1000);
+    // 只有真正恢复出声，才允许锁屏时钟按真实倍速继续走
+    updateMediaPositionState();
 });
 
 function checkFictionRatio() {
