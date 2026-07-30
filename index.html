@@ -1596,40 +1596,25 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-                                      ['play', function() {
-            var savedTime = audio.currentTime;
-            var origUrl   = _currentTrackOrigUrl || audio.src;
-            var watchUrl  = audio.src;
+            ['play', function() {
+            // 【终极修复】彻底移除会在后台触发 audio.load() 的看门狗，防止 iOS 权限阻断
+            // 采用 Micro-seek（微调时间）黑科技唤醒 iOS 底层音频解码器，刷新缓冲区
+            
+            var cur = audio.currentTime;
+            if (cur > 0 && audio.duration && cur < audio.duration) {
+                try {
+                    audio.currentTime = cur + 0.0001; 
+                } catch(e) {}
+            }
 
             var playPromise = audio.play();
-
-            // 【关键修复】"假播放"看门狗：play() 可能正常 resolve、'play' 事件也触发了，
-            // 但底层音频会话并未真正恢复出声，currentTime 也不推进。
-            // 短暂延时后校验进度是否真的前进了，没有就强制走"重新加载+恢复播放"
-            // （复用已验证可靠的 _doLoadResume，它等的是 canplay，比 loadedmetadata 更稳）
-            clearTimeout(_lockPlayWatchdogTimer);
-            _lockPlayWatchdogTimer = setTimeout(function() {
-                if (audio.src !== watchUrl) return;   // 期间切歌了，放弃校验
-                if (audio.paused) return;               // 已被暂停或其它逻辑处理
-                if (Math.abs(audio.currentTime - savedTime) < 0.15) {
-                    console.warn('[LockScreen] 检测到假播放，强制重载恢复');
-                    if (!_isResumingFromLock) {
-                        _isResumingFromLock = true;
-                        _doLoadResume(origUrl, savedTime);
-                    }
-                }
-            }, 1200);
-
             if (playPromise !== undefined) {
-                playPromise.catch(function(e) {
+                playPromise.then(function() {
+                    // 只有真正出声了，才告诉 iOS 锁屏按真实倍速走时钟，防止假跑
+                    updateMediaPositionState();
+                }).catch(function(e) {
                     console.warn('Lock screen play failed:', e.name);
-                    clearTimeout(_lockPlayWatchdogTimer);
-                    if (e.name !== 'AbortError') {
-                        if (!_isResumingFromLock) {
-                            _isResumingFromLock = true;
-                            _doLoadResume(origUrl, savedTime);
-                        }
-                    }
+                    // 如果被 Abort，千万不要在后台强行 load，直接忽略，等用户解锁再处理
                 });
             }
         }],
