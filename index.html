@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.25</title>
+    <title>英语精听播放器 v2.4.26</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -14,7 +14,7 @@
     (function() {
         var iconUrl = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Crect%20width%3D%22100%22%20height%3D%22100%22%20rx%3D%2222.5%22%20fill%3D%22%23007aff%22%2F%3E%3Ctext%20y%3D%2264%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2254%22%3E%F0%9F%8E%A7%3C%2Ftext%3E%3Ctext%20y%3D%2286%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2212.5%22%20font-family%3D%22system-ui%2C%20sans-serif%22%20font-weight%3D%22800%22%20fill%3D%22%23ffffff%22%20letter-spacing%3D%220.5%22%3EEvan%20Yin%3C%2Ftext%3E%3C%2Fsvg%3E";
         var manifest = {
-            name: "英语精听播放器",
+            name: "英语精听播放器",f
             short_name: "精听",
             description: "英语精听与离线听力学习工具",
             start_url: "/",
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.25</div>
+        <div class="version-tag">Build v2.4.26</div>
     </div>
 </div>
 
@@ -1490,9 +1490,9 @@ function setupAudioEvents() {
         document.getElementById('iconPlay').style.display  = 'none';
         document.getElementById('iconPause').style.display = 'block';
         setCompact(false);
-        try { noSleepV.pause(); } catch(e) {} // 播放音频时暂停视频，防止 iOS 抢占 MediaSession 焦点
         try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
-        updateMediaPositionState();
+        // 【关键】移除此处的 updateMediaPositionState()，防止底层还没出声时锁屏时钟瞎跑。
+        // 时钟同步完全交由 'playing' 和 'waiting' 事件接管。
     });
     audio.addEventListener('pause',  function() {
         document.getElementById('iconPlay').style.display  = 'block';
@@ -1504,9 +1504,15 @@ function setupAudioEvents() {
         try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
         updateMediaPositionState(0); // 【关键修复】暂停时把锁屏时钟钉死为 0
     });
-    audio.addEventListener('waiting', function() {
-        // 【关键修复】缓冲/卡顿时立刻让锁屏时钟停止前进——这是"锁屏按播放后时间在走但没声音"的核心修复点
-        updateMediaPositionState(0);
+        audio.addEventListener('playing', function() {
+        _consecutiveErrors = 0;
+        _audioRetryCount = 0;
+        clearTimeout(_audioRetryTimer);
+        clearTimeout(_lockPlayWatchdogTimer);
+        _isResumingFromLock = false;
+        setTimeout(_preloadNextTrack, 1000);
+        // 【关键】只有真正出声了（触发 playing 事件），才告诉 iOS 锁屏按真实倍速走时钟
+        updateMediaPositionState();
     });
     audio.addEventListener('ended',  function() {
         clearMediaSession();
@@ -1596,57 +1602,19 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-                       ['play', function() {
-            // 【终极暴力解法】同步强刷媒体管线，打破 SW 休眠导致的死锁
+                               ['play', function() {
+            // 【终极修复】彻底移除所有在后台强行重置管线或抢占焦点的操作。
+            // iOS 严禁在后台调用 audio.load()，否则会直接挂起底层硬件导致“假播放”。
+            // 只需调用纯粹的 play()，iOS 会自动唤醒 Service Worker 去读数据。
             
-            // 1. 黑科技：用无声视频瞬间“踢醒” iOS 底层硬件的音频焦点
-            try {
-                var vPromise = noSleepV.play();
-                if (vPromise !== undefined) {
-                    vPromise.then(function(){
-                        if (!isWakeLockEnabled) noSleepV.pause();
-                    }).catch(function(){});
-                }
-            } catch(e) {}
-
-            var cur = audio.currentTime;
-            var isBg = (document.visibilityState === 'hidden');
-
-            // 2. 核心修复：如果在后台/锁屏状态，趁拥有合法手势权限，强制砸碎死锁的媒体管线并重建
-            if (isBg) {
-                audio.load(); // 强行丢弃与休眠 SW 之间的僵尸连接，重新发起新的 Range 请求
-            } else {
-                if (cur > 0 && audio.duration && cur < audio.duration) {
-                    try { audio.currentTime = cur + 0.05; } catch(e) {}
-                }
-            }
-
-            // 3. 同步调用 play()，完美符合 iOS 用户手势安全策略
             var playPromise = audio.play();
-
-            // 4. 恢复进度（因为 load() 会把进度归零）
-            if (isBg && cur > 0) {
-                try { audio.currentTime = cur; } catch(e) {}
-                
-                // 监听元数据加载完毕，确保进度和倍速被正确还原
-                var onMeta = function() {
-                    audio.removeEventListener('loadedmetadata', onMeta);
-                    audio.playbackRate = playbackRate; // 恢复之前的播放倍速
-                    if (Math.abs(audio.currentTime - cur) > 0.5) {
-                        try { audio.currentTime = cur; } catch(e) {}
-                    }
-                };
-                audio.addEventListener('loadedmetadata', onMeta);
-            }
-
             if (playPromise !== undefined) {
-                playPromise.then(function() {
-                    // 只有真正出声了，才告诉 iOS 锁屏按真实倍速走时钟，防止假跑
-                    updateMediaPositionState();
-                }).catch(function(e) {
+                playPromise.catch(function(e) {
                     console.warn('Lock screen play failed:', e.name);
                 });
             }
+            // 注意：千万不要在这里调用 updateMediaPositionState()！
+            // 因为 play() 返回成功不代表真正出声了，此时同步状态会导致锁屏时钟“假跑”。
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
