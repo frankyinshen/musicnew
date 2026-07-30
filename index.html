@@ -1523,10 +1523,17 @@ function setupAudioEvents() {
         _consecutiveErrors = 0;
         _audioRetryCount = 0;
         clearTimeout(_audioRetryTimer);
+
+        if (document.visibilityState === 'hidden') {
+            // 后台场景：playing 触发不代表真的出声了（可能只是 iOS 自己在推算进度）
+            // 交给锁屏 play 回调里的 verifyRealPlayback 稍后做二次确认，这里先不清状态、不汇报进度
+            setTimeout(_preloadNextTrack, 1000);
+            return;
+        }
+
         clearTimeout(_lockPlayWatchdogTimer);
         _isResumingFromLock = false;
-        _lastLockPlayFailed = false; // 真正播放成功了，清除失败标记
-        // 【关键补上】只有真正出声了，才告诉系统正在播放
+        _lastLockPlayFailed = false;
         try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
         updateMediaPositionState();
         setTimeout(_preloadNextTrack, 1000);
@@ -1620,24 +1627,22 @@ function setupMediaSession() {
     var ms = navigator.mediaSession;
     var handlers = [
         ['play', function() {
-            // 【关键补上】用户明确要求播放，解锁后才有机会走自愈逻辑
             _wasPlayingBeforeHide = true;
 
-            // 点击瞬间立刻钉死锁屏时钟，防止假跑
-            if (document.visibilityState === 'hidden') {
-                updateMediaPositionState(0);
+            var isHidden = (document.visibilityState === 'hidden');
+            if (isHidden) {
+                updateMediaPositionState(0); // 立刻钉死，不让 iOS 自行推算进度
             }
 
-            var retryUrl  = _currentTrackOrigUrl || audio.src;
-            var retryTime = audio.currentTime;
+            var retryUrl       = _currentTrackOrigUrl || audio.src;
+            var baseTime        = audio.currentTime;
+            var didHardResume   = false;
 
             if (_lastLockPlayFailed && !_isResumingFromLock) {
-                // 上一次锁屏点播放已确认失败，这次直接硬重启
-                // 【修复点】必须先占住标志位，否则 _doLoadResume 等待 canplay 的
-                // 几秒窗口内用户再点一次，会绕过这个判断触发第二个并发的硬重启
                 _isResumingFromLock = true;
+                didHardResume = true;
                 console.warn('[LockScreen] 上次播放已知失败，本次尝试硬重启恢复');
-                _doLoadResume(retryUrl, retryTime);
+                _doLoadResume(retryUrl, baseTime);
             } else {
                 var playPromise = audio.play();
                 if (playPromise !== undefined) {
@@ -1647,14 +1652,32 @@ function setupMediaSession() {
                 }
             }
 
-            // 看门狗：800ms 后若仍未真正触发 playing 事件，标记失败并纠正 UI
+            if (!isHidden) return; // 前台场景交给原有机制，这里只处理锁屏后台场景
+
             clearTimeout(_lockPlayWatchdogTimer);
-            _lockPlayWatchdogTimer = setTimeout(function() {
-                // 不在定时器里发起任何新的音频动作，只标记和纠正 UI
-                _lastLockPlayFailed = true;
-                try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
-                updateMediaPositionState(0);
-            }, 800);
+            var verifyDone = false;
+
+            function verifyRealPlayback() {
+                if (verifyDone) return;
+                verifyDone = true;
+                var advanced = audio.currentTime - baseTime;
+                if (!audio.paused && advanced > 0.3) {
+                    // currentTime 真的往前走了，这时候才放心把节奏汇报回 iOS
+                    updateMediaPositionState();
+                } else {
+                    // currentTime 纹丝不动：这是"假播放"（iOS 自己在推算进度，实际没在解码/出声）
+                    // 钉死状态，主动 pause 一下让 iOS 重置内部状态，等用户下次点击再触发硬重启
+                    _lastLockPlayFailed = true;
+                    _isResumingFromLock = false;
+                    try { audio.pause(); } catch(e) {}
+                    try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
+                    updateMediaPositionState(0);
+                }
+            }
+
+            // 软播放（元素本来就有数据）900ms 足够判断；硬重启涉及重新 load()，
+            // 给够 3 秒再判定，避免网络稍慢时被误判为"假播放"
+            _lockPlayWatchdogTimer = setTimeout(verifyRealPlayback, didHardResume ? 3000 : 900);
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
