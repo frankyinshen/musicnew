@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.27</title>
+    <title>英语精听播放器 v2.4.28</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.27</div>
+        <div class="version-tag">Build v2.4.28</div>
     </div>
 </div>
 
@@ -1525,6 +1525,7 @@ function setupAudioEvents() {
         clearTimeout(_audioRetryTimer);
         clearTimeout(_lockPlayWatchdogTimer);
         _isResumingFromLock = false;
+        _lastLockPlayFailed = false; // 真正播放成功了，清除失败标记
         // 【关键补上】只有真正出声了，才告诉系统正在播放
         try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
         updateMediaPositionState();
@@ -1618,28 +1619,42 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-         ['play', function() {
+        ['play', function() {
             // 【关键补上】用户明确要求播放，解锁后才有机会走自愈逻辑
             _wasPlayingBeforeHide = true;
 
-            var playPromise = audio.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(function(e) {
-                    console.warn('Lock screen play failed:', e.name);
-                    // 失败立刻告诉系统：其实没在播
-                    try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
-                    updateMediaPositionState(0);
-                });
+            // 点击瞬间立刻钉死锁屏时钟，防止假跑
+            if (document.visibilityState === 'hidden') {
+                updateMediaPositionState(0);
             }
 
-            // 【看门狗】2秒后若仍未真正触发 playing 事件，强制把系统状态拉回 paused
+            var retryUrl  = _currentTrackOrigUrl || audio.src;
+            var retryTime = audio.currentTime;
+
+            if (_lastLockPlayFailed && !_isResumingFromLock) {
+                // 上一次锁屏点播放已确认失败，这次直接硬重启
+                // 【修复点】必须先占住标志位，否则 _doLoadResume 等待 canplay 的
+                // 几秒窗口内用户再点一次，会绕过这个判断触发第二个并发的硬重启
+                _isResumingFromLock = true;
+                console.warn('[LockScreen] 上次播放已知失败，本次尝试硬重启恢复');
+                _doLoadResume(retryUrl, retryTime);
+            } else {
+                var playPromise = audio.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(function(e) {
+                        console.warn('Lock screen play failed:', e && e.name);
+                    });
+                }
+            }
+
+            // 看门狗：800ms 后若仍未真正触发 playing 事件，标记失败并纠正 UI
             clearTimeout(_lockPlayWatchdogTimer);
             _lockPlayWatchdogTimer = setTimeout(function() {
-                // 能走到这里说明 2s 内没有真正触发 playing 事件（触发了会被 clear）
-                // 直接强制把系统状态拉回 paused，避免锁屏进度条假跑
+                // 不在定时器里发起任何新的音频动作，只标记和纠正 UI
+                _lastLockPlayFailed = true;
                 try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
                 updateMediaPositionState(0);
-            }, 2000);
+            }, 800);
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
@@ -3906,6 +3921,7 @@ function ctxDoDelete() {
 }
 
 var _isResumingFromLock = false;
+var _lastLockPlayFailed = false; // 记录锁屏播放是否已知失败，用于第二次点击时判断是否需要硬重启
 
 function _iosLockScreenResume() {
     if (_isResumingFromLock) return;
