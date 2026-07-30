@@ -1506,9 +1506,8 @@ function setupAudioEvents() {
         document.getElementById('iconPlay').style.display  = 'none';
         document.getElementById('iconPause').style.display = 'block';
         setCompact(false);
-        try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
-        // 【关键】移除此处的 updateMediaPositionState()，防止底层还没出声时锁屏时钟瞎跑。
-        // 时钟同步完全交由 'playing' 和 'waiting' 事件接管。
+        // 【必删】绝对不要在这里设置 playbackState = 'playing'，防止底层没出声时锁屏时钟假跑。
+        // 【必删】也不要在这里调用 updateMediaPositionState()
     });
     audio.addEventListener('pause',  function() {
         document.getElementById('iconPlay').style.display  = 'block';
@@ -1618,19 +1617,28 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-                               ['play', function() {
-            // 【终极修复】彻底移除所有在后台强行重置管线或抢占焦点的操作。
-            // iOS 严禁在后台调用 audio.load()，否则会直接挂起底层硬件导致“假播放”。
-            // 只需调用纯粹的 play()，iOS 会自动唤醒 Service Worker 去读数据。
-            
+         ['play', function() {
+            // 【关键补上】用户明确要求播放，解锁后才有机会走自愈逻辑
+            _wasPlayingBeforeHide = true;
+
             var playPromise = audio.play();
             if (playPromise !== undefined) {
                 playPromise.catch(function(e) {
                     console.warn('Lock screen play failed:', e.name);
+                    // 失败立刻告诉系统：其实没在播
+                    try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
+                    updateMediaPositionState(0);
                 });
             }
-            // 注意：千万不要在这里调用 updateMediaPositionState()！
-            // 因为 play() 返回成功不代表真正出声了，此时同步状态会导致锁屏时钟“假跑”。
+
+            // 【看门狗】2秒后若仍未真正触发 playing 事件，强制把系统状态拉回 paused
+            clearTimeout(_lockPlayWatchdogTimer);
+            _lockPlayWatchdogTimer = setTimeout(function() {
+                // 能走到这里说明 2s 内没有真正触发 playing 事件（触发了会被 clear）
+                // 直接强制把系统状态拉回 paused，避免锁屏进度条假跑
+                try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
+                updateMediaPositionState(0);
+            }, 2000);
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
@@ -2096,6 +2104,7 @@ document.addEventListener('visibilitychange', function() {
             wakeLockObj = null;
         }
    } else {
+   } else {
         if (isWakeLockEnabled) {
             _requestWakeLock(true);
             if (audio.paused) {
@@ -2106,27 +2115,29 @@ document.addEventListener('visibilitychange', function() {
             if (audio.ended) {
                 playNext();
             } else {
+                var checkTime = audio.currentTime;
                 setTimeout(function() {
                     if (!_wasPlayingBeforeHide) return;
                     if (_isResumingFromLock) return;
-                    if (!audio.paused) {
-                        var t = audio.currentTime;
-                        var d = audio.duration;
-                        if (d && !isNaN(d) && !isNaN(t)) {
-                            var pct = (t / d) * 100;
-                            slider.value = pct;
-                            setFill(pct);
-                            document.getElementById('trackTime').textContent =
-                                fmtTime(t) + ' / ' + fmtTime(d);
-                        }
+
+                    if (audio.paused) {
+                        // 锁屏点了播放但页面仍 paused → 尝试恢复
+                        _iosLockScreenResume();
                         return;
                     }
-                    _iosLockScreenResume();
-                }, 400);
+
+                    // 【收紧自愈条件】仅在“声称在播、readyState正常、时间完全不动”时自愈
+                    if (audio.readyState >= 2 && Math.abs(audio.currentTime - checkTime) < 0.05) {
+                        console.warn('[LockScreen] 检测到前台死锁，自动重启播放');
+                        var t = audio.currentTime;
+                        audio.pause();
+                        try { audio.currentTime = t; } catch(e) {}
+                        safePlay();
+                    }
+                }, 600);
             }
         }
     }
-});
 
 window.addEventListener('pagehide', function() { saveSession(); });
 window.addEventListener('beforeunload', function() { saveSession(); });
@@ -4044,9 +4055,10 @@ audio.addEventListener('playing', function() {
     clearTimeout(_audioRetryTimer);
     clearTimeout(_lockPlayWatchdogTimer);
     _isResumingFromLock = false;
-    setTimeout(_preloadNextTrack, 1000);
-    // 只有真正恢复出声，才允许锁屏时钟按真实倍速继续走
+    // 【必加】只有真正出声了，才告诉系统正在播放
+    try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
     updateMediaPositionState();
+    setTimeout(_preloadNextTrack, 1000);
 });
 
 function checkFictionRatio() {
