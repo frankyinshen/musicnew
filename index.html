@@ -1589,17 +1589,32 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-        ['play', function() {
-            // [新增] 深度休眠兜底：如果直接 play 失败，说明音频上下文已失效，尝试重新 load
+               ['play', function() {
             var playPromise = audio.play();
             if (playPromise !== undefined) {
                 playPromise.catch(function(e) {
                     console.warn('Lock screen play failed:', e.name);
                     if (e.name !== 'AbortError') {
+                        // 【关键修复】深度休眠兜底：保存进度，防止 load() 导致进度归零
+                        var savedTime = audio.currentTime;
                         audio.load();
-                        audio.play().catch(function(err) {
-                            showToast('⚠️ 恢复播放失败，请解锁屏幕');
-                        });
+                        
+                        // 监听元数据加载完毕后恢复进度并播放
+                        var restoreAndPlay = function() {
+                            audio.removeEventListener('loadedmetadata', restoreAndPlay);
+                            audio.currentTime = savedTime;
+                            audio.play().catch(function(){});
+                        };
+                        audio.addEventListener('loadedmetadata', restoreAndPlay);
+                        
+                        // 终极兜底：防止 iOS 某些情况下不派发 loadedmetadata
+                        setTimeout(function() {
+                            audio.removeEventListener('loadedmetadata', restoreAndPlay);
+                            if (audio.paused) {
+                                audio.currentTime = savedTime;
+                                audio.play().catch(function(){});
+                            }
+                        }, 500);
                     }
                 });
             }
@@ -1750,10 +1765,16 @@ function _doSeek(targetTime, forcePlay) {
         }
     }
 
-    if (isLockScreen) {
+        if (isLockScreen) {
         try { 
+            var wasPlaying = !audio.paused; // 记录原本的播放状态
             audio.currentTime = targetTime; 
-            updateMediaPositionState(); // [优化 2] 立刻同步给 iOS 锁屏进度条，防回弹
+            updateMediaPositionState(); // 立刻同步给 iOS 锁屏进度条，防回弹
+            
+            // 【关键修复】如果是播放状态下快进，显式唤醒播放，防止 iOS 卡在缓冲态
+            if (wasPlaying) {
+                audio.play().catch(function(){});
+            }
         } catch(e) {}
     } else {
         try { audio.pause(); } catch(e) {}
