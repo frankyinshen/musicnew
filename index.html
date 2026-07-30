@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.23</title>
+    <title>英语精听播放器 v2.4.24</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.23</div>
+        <div class="version-tag">Build v2.4.24</div>
     </div>
 </div>
 
@@ -1596,27 +1596,17 @@ function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
-                              ['play', function() {
-            // =================================================================
-            // 【终极修复】解决 iOS 锁屏暂停后，SW 休眠导致的“假播放无声”死锁
-            // =================================================================
-            
-            // 1. 主动唤醒：发送一个轻量的真实网络请求，主线程的 fetch 具有最高优先级，能瞬间强行唤醒后台休眠的 Service Worker。
-            fetch('/?wake=' + Date.now()).catch(function(){});
-
-            // 2. 刷新缓冲：原地重置 currentTime。强制 <audio> 内核丢弃之前可能卡死的底层 TCP/Range 连接，重新向刚唤醒的 SW 要数据。
-            if (audio.currentTime > 0) {
-                audio.currentTime = audio.currentTime;
-            }
-
+                                      ['play', function() {
             var savedTime = audio.currentTime;
             var origUrl   = _currentTrackOrigUrl || audio.src;
             var watchUrl  = audio.src;
 
             var playPromise = audio.play();
 
-            // 3. 被动看门狗：play() 可能正常 resolve、'play' 事件也触发了，但底层音频会话并未真正恢复出声。
-            // 短暂延时后校验进度是否真的前进了，没有就强制走"重新加载+恢复播放"。
+            // 【关键修复】"假播放"看门狗：play() 可能正常 resolve、'play' 事件也触发了，
+            // 但底层音频会话并未真正恢复出声，currentTime 也不推进。
+            // 短暂延时后校验进度是否真的前进了，没有就强制走"重新加载+恢复播放"
+            // （复用已验证可靠的 _doLoadResume，它等的是 canplay，比 loadedmetadata 更稳）
             clearTimeout(_lockPlayWatchdogTimer);
             _lockPlayWatchdogTimer = setTimeout(function() {
                 if (audio.src !== watchUrl) return;   // 期间切歌了，放弃校验
