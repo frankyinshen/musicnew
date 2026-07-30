@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.21</title> <!-- 版本号更新 -->
+    <title>英语精听播放器 v2.4.23</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -148,7 +148,7 @@
         .drag-handle { color: #ccc; margin-right: 12px; font-size: 20px; cursor: grab; padding: 5px; touch-action: none; }
         .item-icon { font-size: 20px; margin-right: 12px; width: 24px; text-align: center; }
         .item-info { -webkit-flex: 1; flex: 1; overflow: hidden; }
-        .item-title { font-size: 16px; overflow: hidden; white-space: nowrap; color: var(--ios-text); }
+        .item-title { font-size: 16px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ios-text); }
         .item-subtext { font-size: 11px; color: var(--ios-subtext); margin-top: 2px; }
         .item-fav-heart { padding: 10px; font-size: 20px; color: #ddd; }
         .item-fav-heart.fav-on { color: var(--ios-red); }
@@ -216,7 +216,7 @@
             will-change: transform;
         }
         .marquee-inner.marquee-active {
-            animation: marquee-scroll 6s linear infinite alternate;
+            animation: marquee-scroll 7.5s linear infinite alternate;
         }
         @keyframes marquee-scroll {
             0% { transform: translateX(0); }
@@ -381,9 +381,9 @@
         #toast {
             position: fixed; top: 25%; left: 50%;
             -webkit-transform: translateX(-50%); transform: translateX(-50%);
-            background: rgba(0,0,0,0.82); color: white;
+            background: rgba(0, 0,0,0.82); color: white;
             padding: 11px 22px; border-radius: 22px; font-size: 15px;
-            z-index: 5000; display: none; white-space: nowrap; /* [修复] 提升至 5000 确保不被浮层遮挡 */
+            z-index: 5000; display: none; white-space: nowrap;
         }
         #noSleepVideo { display: none; width: 1px; height: 1px; }
 
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.21</div>
+        <div class="version-tag">Build v2.4.23</div>
     </div>
 </div>
 
@@ -1253,7 +1253,7 @@ var _fileSizeCache     = {};
 var _latestPlayRequestUrl = null;
 var _autoNextTimer = null;
 var _consecutiveErrors = 0;
-var _drawChartTimer = null; // [新增] 图表防抖定时器
+var _drawChartTimer = null;
 
 var playlists   = {};
 var progressDB  = {};
@@ -1313,18 +1313,8 @@ function _quickRestoreUI() {
     }
 
     var targetTime = ps.trackTime > 2 ? ps.trackTime : (progressDB[ps.trackUrl] || 0);
-    _idbGet(ps.trackUrl, function(buf) {
-        if (_latestPlayRequestUrl !== ps.trackUrl) return;
-        _revokeCurrentObjectUrl();
-        _currentTrackOrigUrl = ps.trackUrl;
-        if (buf) {
-            var b = new Blob([buf], { type: _guessMime(ps.trackUrl) });
-            _currentObjectUrl = URL.createObjectURL(b);
-            audio.src = _currentObjectUrl;
-        } else {
-            audio.src = ps.trackUrl;
-        }
-    });
+    _currentTrackOrigUrl = ps.trackUrl;
+    audio.src = ps.trackUrl;
     try { startAudioInfoLoad(ps.trackUrl); } catch(e) {}
 
     var seekApplied = false;
@@ -1391,6 +1381,15 @@ function init() {
     startStatsTicker();
     setupMediaSession();
 
+    // [新增] 旁路 iOS 16.4+ 硬件静音开关
+    if (typeof window !== 'undefined' && 'audioSession' in navigator) {
+        try {
+            navigator.audioSession.type = 'playback';
+        } catch (e) {
+            console.warn('Failed to set audio session type to playback:', e);
+        }
+    }
+
     if (!restoreSession()) {
         fetchDirectory(currentPath);
         setCompact(false);
@@ -1400,14 +1399,10 @@ function init() {
     window.addEventListener('resize', function() {
         clearTimeout(window._resizeMarqueeTimer);
         window._resizeMarqueeTimer = setTimeout(function() {
-            var inners = document.querySelectorAll('.marquee-inner');
-            for (var k = 0; k < inners.length; k++) {
-                applyMarquee(inners[k]);
-            }
+            applyMarquee(document.getElementById('trackNameInner'));
         }, 200);
     });
 
-    // [新增] 动态生成 iOS 兼容的 PNG 图标
     try {
         var canvasIcon = document.createElement('canvas');
         canvasIcon.width = 180;
@@ -1494,40 +1489,48 @@ function setupAudioEvents() {
         document.getElementById('iconPlay').style.display  = 'none';
         document.getElementById('iconPause').style.display = 'block';
         setCompact(false);
+        try { noSleepV.pause(); } catch(e) {} // 播放音频时暂停视频，防止 iOS 抢占 MediaSession 焦点
+        updateMediaPositionState(); // 立即同步锁屏进度状态
     });
     audio.addEventListener('pause',  function() {
         document.getElementById('iconPlay').style.display  = 'block';
         document.getElementById('iconPause').style.display = 'none';
         saveProgress();
+        if (isWakeLockEnabled) {
+            noSleepV.play().catch(function(){}); // 音频暂停且开启常亮时，恢复无声视频播放
+        }
+        updateMediaPositionState(); // 立即同步锁屏进度状态
     });
     audio.addEventListener('ended',  function() {
-    clearMediaSession();
-    var _endedKey = _currentTrackOrigUrl || audio.src;
-    try { delete progressDB[_endedKey]; localStorage.setItem('audio_progress_v2', JSON.stringify(progressDB)); } catch(e) {}
-    if (currentTrackIndex < 0) {
-        if (_currentTrackOrigUrl) {
-            audio.currentTime = 0;
-            safePlay();
-        } else {
-            document.getElementById('iconPlay').style.display  = 'block';
-            document.getElementById('iconPause').style.display = 'none';
+        clearMediaSession();
+        var _endedKey = _currentTrackOrigUrl || audio.src;
+        try { delete progressDB[_endedKey]; localStorage.setItem('audio_progress_v2', JSON.stringify(progressDB)); } catch(e) {}
+        if (currentTrackIndex < 0) {
+            if (_currentTrackOrigUrl) {
+                audio.currentTime = 0;
+                safePlay();
+            } else {
+                document.getElementById('iconPlay').style.display  = 'block';
+                document.getElementById('iconPause').style.display = 'none';
+            }
+            return;
         }
-        return;
-    }
-    if (playMode === 'single') { playTrack(currentTrackIndex); }
-    else { playNext(); }
-});
+        if (playMode === 'single') { playTrack(currentTrackIndex); }
+        else { playNext(); }
+    });
     audio.addEventListener('timeupdate', onTU);
     audio.addEventListener('durationchange', function() {
         if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
             document.getElementById('trackTime').textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
             updateAudioInfo();
+            updateMediaPositionState(); // 立即同步锁屏进度
         }
     });
     audio.addEventListener('loadedmetadata', function() {
         if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
             document.getElementById('trackTime').textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
             updateAudioInfo();
+            updateMediaPositionState(); // 立即同步锁屏进度
         }
     });
 
@@ -1587,12 +1590,19 @@ function setupMediaSession() {
     var ms = navigator.mediaSession;
     var handlers = [
         ['play', function() {
-            audio.play().catch(function(e) {
-                console.warn('Lock screen play failed:', e.name);
-                if (e.name !== 'AbortError') {
-                    showToast('⚠️ 恢复播放失败，请解锁后操作');
-                }
-            });
+            // [新增] 深度休眠兜底：如果直接 play 失败，说明音频上下文已失效，尝试重新 load
+            var playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(function(e) {
+                    console.warn('Lock screen play failed:', e.name);
+                    if (e.name !== 'AbortError') {
+                        audio.load();
+                        audio.play().catch(function(err) {
+                            showToast('⚠️ 恢复播放失败，请解锁屏幕');
+                        });
+                    }
+                });
+            }
         }],
         ['pause', function() {
             audio.pause();
@@ -1668,169 +1678,42 @@ function playTrack(index) {
     _sessionCounted = false;
     _sessionSec     = 0;
 
-    if (_preloadedNextTrack && _preloadedNextTrack.url !== track.url) {
-        try { URL.revokeObjectURL(_preloadedNextTrack.objUrl); } catch(e) {}
-        _preloadedNextTrack = null;
+    // [重构] 移除前端 IDB Blob 读取，直接赋值 URL，交由 Service Worker 拦截响应
+    _currentTrackOrigUrl = track.url;
+    audio.src = track.url;
+    audio.playbackRate = playbackRate;
+
+    if (savedTime > 2) {
+        try { audio.currentTime = savedTime; } catch(e) {}
+        showToast('恢复进度: ' + fmtTime(savedTime));
     }
 
-    // === 【修复 1：同步热插拔预加载音频，防止iOS锁屏下后台播放中断】 ===
-    if (_preloadedNextTrack && _preloadedNextTrack.url === track.url) {
-        _revokeCurrentObjectUrl();
-        _currentObjectUrl = _preloadedNextTrack.objUrl;
-        _currentTrackOrigUrl = track.url;
-        audio.src = _currentObjectUrl;
-        _preloadedNextTrack = null; 
-        
-        audio.playbackRate = playbackRate;
-        if (savedTime > 2) {
-            try { audio.currentTime = savedTime; } catch(e) {}
-            showToast('恢复进度: ' + fmtTime(savedTime));
-            setTimeout(function() {
-                try { audio.currentTime = savedTime; } catch(e) {}
-                safePlay();
-                updateAudioInfo();
-            }, 100);
-        } else {
-            safePlay();
-            updateAudioInfo();
-        }
-        return; // 同步返回，直接避开下方的异步 _idbGet
-    }
-    // ==========================================================
-
-    _idbGet(track.url, function(buffer) {
-        if (_latestPlayRequestUrl !== track.url) return;
-
-        if (_preloadedNextTrack && _preloadedNextTrack.url === track.url) {
-            _revokeCurrentObjectUrl();
-            _currentObjectUrl = _preloadedNextTrack.objUrl;
-            _currentTrackOrigUrl = track.url;
-            audio.src = _currentObjectUrl;
-            _preloadedNextTrack = null; 
-        } else {
-            _revokeCurrentObjectUrl();
-            _currentTrackOrigUrl = track.url;
-            if (buffer) {
-                var blob = new Blob([buffer], { type: _guessMime(track.url) });
-                _currentObjectUrl = URL.createObjectURL(blob);
-                audio.src = _currentObjectUrl;
-            } else {
-                audio.src = track.url;
-            }
-        }
-        
-        audio.playbackRate = playbackRate;
-
-        if (document.visibilityState === 'hidden') {
-            safePlay();
-            var cpFallback = function() {
-                if (_latestPlayRequestUrl !== track.url) {
-                    audio.removeEventListener('canplay', cpFallback);
-                    audio.removeEventListener('loadedmetadata', cpFallback);
-                    return;
-                }
-                audio.removeEventListener('canplay', cpFallback);
-                audio.removeEventListener('loadedmetadata', cpFallback);
-                audio.playbackRate = playbackRate;
-                safePlay();
-                updateAudioInfo();
-            };
-            audio.addEventListener('canplay', cpFallback);
-            audio.addEventListener('loadedmetadata', cpFallback);
-        } else {
-            var _metaLoaded = false;
-            var cpHandler = function() {
-                if (_latestPlayRequestUrl !== track.url) {
-                    audio.removeEventListener('canplay', cpHandler);
-                    audio.removeEventListener('loadedmetadata', cpHandler);
-                    return;
-                }
-                if (_metaLoaded) return;
-                _metaLoaded = true;
+    if (document.visibilityState === 'hidden') {
+        safePlay();
+    } else {
+        var _metaLoaded = false;
+        var cpHandler = function() {
+            if (_latestPlayRequestUrl !== track.url) {
                 audio.removeEventListener('canplay', cpHandler);
                 audio.removeEventListener('loadedmetadata', cpHandler);
-                audio.playbackRate = playbackRate;
-                if (savedTime > 2) {
-                    try { audio.currentTime = savedTime; } catch(e) {}
-                    showToast('恢复进度: ' + fmtTime(savedTime));
-                    setTimeout(function() {
-                        try { audio.currentTime = savedTime; } catch(e) {}
-                        safePlay();
-                        updateAudioInfo();
-                    }, 100);
-                } else {
-                    safePlay();
-                    updateAudioInfo();
-                }
-            };
-            audio.addEventListener('canplay', cpHandler);
-            audio.addEventListener('loadedmetadata', cpHandler);
-            audio.load();
-
-            var _pollCount = 0;
-            var _pollTimer = setInterval(function() {
-                _pollCount++;
-                if (_metaLoaded || _pollCount > 30) {
-                    clearInterval(_pollTimer);
-                    return;
-                }
-                if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
-                    clearInterval(_pollTimer);
-                    if (!_metaLoaded) {
-                        _metaLoaded = true;
-                        audio.removeEventListener('canplay', cpHandler);
-                        audio.removeEventListener('loadedmetadata', cpHandler);
-                        audio.playbackRate = playbackRate;
-                        if (savedTime > 2) {
-                            try { audio.currentTime = savedTime; } catch(e) {}
-                            showToast('恢复进度: ' + fmtTime(savedTime));
-                            setTimeout(function() {
-                                try { audio.currentTime = savedTime; } catch(e) {}
-                                safePlay();
-                                updateAudioInfo();
-                            }, 100);
-                        } else {
-                            safePlay();
-                            updateAudioInfo();
-                        }
-                    }
-                }
-            }, 300);
-        }
-    });
+                return;
+            }
+            if (_metaLoaded) return;
+            _metaLoaded = true;
+            audio.removeEventListener('canplay', cpHandler);
+            audio.removeEventListener('loadedmetadata', cpHandler);
+            audio.playbackRate = playbackRate;
+            safePlay();
+            updateAudioInfo();
+        };
+        audio.addEventListener('canplay', cpHandler);
+        audio.addEventListener('loadedmetadata', cpHandler);
+        audio.load();
+    }
 }
 
 function _preloadNextTrack() {
-    if (!playList || playList.length < 2) return;
-    var nextIdx = -1;
-    if (playMode === 'shuffle') {
-        var pos = shuffleOrder.indexOf(currentTrackIndex);
-        if (pos === -1) return;
-        nextIdx = shuffleOrder[pos + 1] !== undefined ? shuffleOrder[pos + 1] : shuffleOrder[0];
-    } else {
-        nextIdx = (currentTrackIndex + 1) % playList.length;
-    }
-    
-    if (nextIdx < 0 || nextIdx === currentTrackIndex) return;
-    var nextTrack = playList[nextIdx];
-    if (!nextTrack || !nextTrack.url) return;
-    
-    if (_preloadedNextTrack && _preloadedNextTrack.url === nextTrack.url) return;
-    
-    if (_preloadedNextTrack) {
-        try { URL.revokeObjectURL(_preloadedNextTrack.objUrl); } catch(e) {}
-        _preloadedNextTrack = null;
-    }
-    
-    var expectedCurUrl = _latestPlayRequestUrl; 
-    _idbGet(nextTrack.url, function(buffer) {
-        if (buffer && _latestPlayRequestUrl === expectedCurUrl) { 
-            var blob = new Blob([buffer], { type: _guessMime(nextTrack.url) });
-            var objUrl = URL.createObjectURL(blob);
-            _preloadedNextTrack = { url: nextTrack.url, objUrl: objUrl };
-            console.log('[Preload] Next track ready:', nextTrack.name);
-        }
-    });
+    // Service Worker 会自动处理网络/缓存，前端无需预加载 Blob
 }
 
 function playNext() {
@@ -1861,8 +1744,17 @@ function _doSeek(targetTime, forcePlay) {
     var shouldPlay = (forcePlay !== undefined) ? forcePlay : !audio.paused;
     var isLockScreen = (document.visibilityState === 'hidden');
 
+    if (abA !== null && abB !== null) {
+        if (targetTime < abA || targetTime > abB) {
+            resetAB();
+        }
+    }
+
     if (isLockScreen) {
-        try { audio.currentTime = targetTime; } catch(e) {}
+        try { 
+            audio.currentTime = targetTime; 
+            updateMediaPositionState(); // [优化 2] 立刻同步给 iOS 锁屏进度条，防回弹
+        } catch(e) {}
     } else {
         try { audio.pause(); } catch(e) {}
         try { audio.currentTime = targetTime; } catch(e) {}
@@ -2047,8 +1939,7 @@ function buildSpeedWheel() {
 
     wheel.addEventListener('scroll', function() {
         clearTimeout(_speedScrollTimer);
-        _speedScrollTimer = setTimeout(applyWheelSpeed, 80);
-        applyWheelSpeed();
+        _speedScrollTimer = setTimeout(applyWheelSpeed, 50);
     }, false);
 }
 
@@ -2127,7 +2018,9 @@ function toggleWakeLock() {
     _setWakeLockUI(isWakeLockEnabled);
     if (isWakeLockEnabled) {
         _requestWakeLock(false);
-        noSleepV.play().catch(function(){});
+        if (audio.paused) {
+            noSleepV.play().catch(function(){});
+        }
     } else {
         if (wakeLockObj) { try { wakeLockObj.release(); } catch(e){} wakeLockObj = null; }
         noSleepV.pause();
@@ -2146,7 +2039,12 @@ document.addEventListener('visibilitychange', function() {
             wakeLockObj = null;
         }
    } else {
-        if (isWakeLockEnabled) _requestWakeLock(true);
+        if (isWakeLockEnabled) {
+            _requestWakeLock(true);
+            if (audio.paused) {
+                noSleepV.play().catch(function(){});
+            }
+        }
         if (_wasPlayingBeforeHide && audio.src) {
             if (audio.ended) {
                 playNext();
@@ -2278,7 +2176,7 @@ function addToPlaylist(name, targetTrack) {
 }
 
 function createNewPlaylistFromModal(targetTrack) {
-    var name = prompt('新收藏夹名称:')
+    var name = prompt('新收藏夹名称:');
     if (name && name.trim()) {
         var c = name.trim();
         if (!playlists[c]) playlists[c] = [];
@@ -2388,7 +2286,7 @@ function parseDirectoryJSON(data, prefix) {
 
     for (var i = 0; i < folders.length; i++) {
         var f = folders[i];
-        var fullUrl = SITE_ROOT + f.path;
+        var fullUrl = SITE_ROOT.replace(/\/$/, '') + '/' + f.path.replace(/^\//, '');
         fileList.push({ name: f.name, url: fullUrl, isFolder: true, isAudio: false });
     }
     for (var j = 0; j < files.length; j++) {
@@ -2396,7 +2294,7 @@ function parseDirectoryJSON(data, prefix) {
         var nLow = fi.name.toLowerCase();
         var isAudio = AUDIO_EXTS.some(function(ext) { return nLow.slice(-ext.length) === ext; });
         if (isAudio) {
-            var fileUrl = SITE_ROOT + fi.key;
+            var fileUrl = SITE_ROOT.replace(/\/$/, '') + '/' + fi.key.replace(/^\//, '');
             var item = { name: fi.name, url: fileUrl, isFolder: false, isAudio: true };
             fileList.push(item);
             playList.push(item);
@@ -2496,11 +2394,6 @@ function renderList(items, isPlaylist) {
         })(items[i]);
     }
     _refreshAllBadges();
-    
-    var inners = container.querySelectorAll('.marquee-inner');
-    for (var k = 0; k < inners.length; k++) {
-        applyMarquee(inners[k]);
-    }
 }
 
 function appendPinnedItem(container, icon, title, sub, onclick) {
@@ -2517,6 +2410,15 @@ function renderListHighlight() {
     for (var i = 0; i < items.length; i++) {
         var isActive = items[i].dataset.url === currentUrl;
         items[i].classList.toggle('active', isActive);
+        var inner = items[i].querySelector('.marquee-inner');
+        if (inner) {
+            if (isActive) {
+                applyMarquee(inner);
+            } else {
+                inner.classList.remove('marquee-active');
+                inner.style.removeProperty('--marquee-offset');
+            }
+        }
     }
 }
 
@@ -2540,8 +2442,6 @@ function renderPlaylistFolders(keys) {
             container.appendChild(div);
         })(keys[k]);
     }
-    var inners = container.querySelectorAll('.marquee-inner');
-    for (var i = 0; i < inners.length; i++) { applyMarquee(inners[i]); }
 }
 
 function renderTracksInPlaylist(name, filterTerm) {
@@ -2592,8 +2492,7 @@ function renderTracksInPlaylist(name, filterTerm) {
     }
     container.insertBefore(pinnedFrag, container.firstChild);
 
-    var allInners = container.querySelectorAll('.marquee-inner');
-    for (var i = 0; i < allInners.length; i++) applyMarquee(allInners[i]);
+    renderListHighlight();
 }
 
 function goBack() {
@@ -3039,7 +2938,6 @@ function buildShareImage(dates, label, showBarChart, weekExtra) {
 
     var totalSec = allTracks.reduce(function(a,t){ return a + t.sec; }, 0);
 
-    // [修复 5] 限制最多绘制 25 条，防止列表过长导致 Canvas 超限崩溃
     var tracks = allTracks;
     if (tracks.length > 25) {
         tracks = tracks.slice(0, 25);
@@ -3063,7 +2961,6 @@ function buildShareImage(dates, label, showBarChart, weekExtra) {
     var W       = 750;
     var PAD     = 32;
     var cardW   = W - PAD * 2;
-    // [修复 5] 限制最大 dpr 为 2，防止高DPR设备生成超大画布
     var dpr     = Math.min(window.devicePixelRatio || 2, 2);
 
     var HEADER_H  = 130;
@@ -3712,7 +3609,6 @@ function renderStats() {
 
     body.innerHTML = html;
     
-    // [修复 2] 防抖：清理上一次的绘制定时器，避免快速点击导致渲染竞态闪烁
     clearTimeout(_drawChartTimer);
     _drawChartTimer = setTimeout(function() { drawBarChart(values, dates); }, 30);
 }
@@ -3967,68 +3863,41 @@ function _iosLockScreenResume() {
 
 function _doLoadResume(src, rTime) {
     audio.pause();
-    audio.src = '';
+    audio.src = src;
+    audio.playbackRate = playbackRate;
     audio.load();
     
+    var _resumeResolved = false;
+    function finalPlay() {
+        if (_resumeResolved) return;
+        _resumeResolved = true;
+        if (rTime > 0.5) { try { audio.currentTime = rTime; } catch(e) {} }
+        safePlay().then(function() { _isResumingFromLock = false; })
+                  .catch(function() { _isResumingFromLock = false; });
+    }
+    
+    var onReady = function() {
+        audio.removeEventListener('canplay', onReady);
+        audio.removeEventListener('error', onErr);
+        finalPlay();
+    };
+    var onErr = function() {
+        audio.removeEventListener('error', onErr);
+        audio.removeEventListener('canplay', onReady);
+        if (!_resumeResolved) { _resumeResolved = true; _isResumingFromLock = false; }
+    };
+    audio.addEventListener('canplay', onReady);
+    audio.addEventListener('error', onErr);
+
     setTimeout(function() {
-        var _resumeResolved = false;
-
-        function finalPlay() {
-            if (_resumeResolved) return;
+        if (!_resumeResolved) {
+            audio.removeEventListener('canplay', onReady);
+            audio.removeEventListener('error', onErr);
             _resumeResolved = true;
-            if (rTime > 0.5) { try { audio.currentTime = rTime; } catch(e) {} }
-            safePlay().then(function() { _isResumingFromLock = false; })
-                      .catch(function() { _isResumingFromLock = false; });
+            _isResumingFromLock = false;
+            console.warn('Resume timeout, releasing lock.');
         }
-        
-        var onReady = function() {
-            audio.removeEventListener('canplay', onReady);
-            audio.removeEventListener('error', onErr);
-            finalPlay();
-        };
-
-        var onErr = function() {
-            audio.removeEventListener('error', onErr);
-            audio.removeEventListener('canplay', onReady);
-            if (!_resumeResolved) {
-                _resumeResolved = true;
-                _isResumingFromLock = false;
-            }
-        };
-
-        audio.addEventListener('canplay', onReady);
-        audio.addEventListener('error', onErr);
-
-        setTimeout(function() {
-            if (!_resumeResolved) {
-                audio.removeEventListener('canplay', onReady);
-                audio.removeEventListener('error', onErr);
-                _resumeResolved = true;
-                _isResumingFromLock = false;
-                console.warn('Resume timeout, releasing lock.');
-            }
-        }, 5000); 
-        
-        if (_currentObjectUrl && _currentTrackOrigUrl) {
-            _idbGet(_currentTrackOrigUrl, function(buffer) {
-                _revokeCurrentObjectUrl();
-                if (buffer) {
-                    var blob = new Blob([buffer], { type: _guessMime(_currentTrackOrigUrl) });
-                    _currentObjectUrl = URL.createObjectURL(blob);
-                    audio.src = _currentObjectUrl;
-                } else {
-                    _currentObjectUrl = null;
-                    audio.src = _currentTrackOrigUrl;
-                }
-                audio.playbackRate = playbackRate;
-                audio.load();
-            });
-        } else {
-            audio.src = src;
-            audio.playbackRate = playbackRate;
-            audio.load();
-        }
-    }, 100);
+    }, 5000); 
 }
 
 function safePlay(targetAudio) {
@@ -4089,7 +3958,6 @@ audio.addEventListener('error', function() {
     document.getElementById('iconPlay').style.display  = 'block';
     document.getElementById('iconPause').style.display = 'none';
     
-    // [修复 6] 离线状态下直接停止，避免无限切歌
     if (navigator.onLine === false) {
         showToast('📶 处于离线状态，已停止加载未缓存音频');
         audio.pause();
@@ -4717,25 +4585,20 @@ function _playFromCache(url, name) {
         showToast('播放：' + name);
         return;
     }
-    _idbGet(url, function(buffer) {
-        if (!buffer) { showToast('缓存数据丢失，请重新下载'); return; }
-        _revokeCurrentObjectUrl();
-        _currentTrackOrigUrl = url;
-        var blob = new Blob([buffer], { type: _guessMime(url) });
-        _currentObjectUrl = URL.createObjectURL(blob);
-        audio.src = _currentObjectUrl;
-        audio.playbackRate = playbackRate;
-        
-        var inner = document.getElementById('trackNameInner');
-        if (inner) {
-            inner.textContent = name;
-            applyMarquee(inner);
-        }
-        setCompact(false);
-        safePlay();
-        closeCacheManager();
-        showToast('离线播放：' + name);
-    });
+    // 如果列表中没有，直接通过 SW 播放
+    _currentTrackOrigUrl = url;
+    audio.src = url;
+    audio.playbackRate = playbackRate;
+    
+    var inner = document.getElementById('trackNameInner');
+    if (inner) {
+        inner.textContent = name;
+        applyMarquee(inner);
+    }
+    setCompact(false);
+    safePlay();
+    closeCacheManager();
+    showToast('离线播放：' + name);
 }
 
 function openCacheManager() {
@@ -4830,11 +4693,6 @@ function _renderCacheList() {
                 list.appendChild(item);
             });
         });
-        
-        var inners = list.querySelectorAll('.marquee-inner');
-        for (var k = 0; k < inners.length; k++) {
-            applyMarquee(inners[k]);
-        }
     });
 }
 
