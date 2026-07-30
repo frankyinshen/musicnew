@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.26</title>
+    <title>英语精听播放器 v2.4.27</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.26</div>
+        <div class="version-tag">Build v2.4.27</div>
     </div>
 </div>
 
@@ -1315,40 +1315,56 @@ function _quickRestoreUI() {
 
     var targetTime = ps.trackTime > 2 ? ps.trackTime : (progressDB[ps.trackUrl] || 0);
     _currentTrackOrigUrl = ps.trackUrl;
-    audio.src = ps.trackUrl;
-    try { startAudioInfoLoad(ps.trackUrl); } catch(e) {}
+    _revokeCurrentObjectUrl();
 
-    var seekApplied = false;
-    var lsHandler = function() {
-        if (_latestPlayRequestUrl !== ps.trackUrl) {
-            audio.removeEventListener('loadstart', lsHandler); return;
-        }
-        audio.removeEventListener('loadstart', lsHandler);
-        if (seekApplied) return;
-        seekApplied = true;
-        if (targetTime > 2) {
-            try { audio.currentTime = targetTime; } catch(e) {}
-        }
-    };
-    audio.addEventListener('loadstart', lsHandler);
+    var doRestorePlay = function(srcUrl) {
+        if (_latestPlayRequestUrl !== ps.trackUrl) return;
+        audio.src = srcUrl;
+        try { startAudioInfoLoad(ps.trackUrl); } catch(e) {}
 
-    var cpHandler = function() {
-        if (_latestPlayRequestUrl !== ps.trackUrl) {
+        var seekApplied = false;
+        var lsHandler = function() {
+            if (_latestPlayRequestUrl !== ps.trackUrl) {
+                audio.removeEventListener('loadstart', lsHandler); return;
+            }
+            audio.removeEventListener('loadstart', lsHandler);
+            if (seekApplied) return;
+            seekApplied = true;
+            if (targetTime > 2) {
+                try { audio.currentTime = targetTime; } catch(e) {}
+            }
+        };
+        audio.addEventListener('loadstart', lsHandler);
+
+        var cpHandler = function() {
+            if (_latestPlayRequestUrl !== ps.trackUrl) {
+                audio.removeEventListener('canplay', cpHandler);
+                audio.removeEventListener('loadedmetadata', cpHandler);
+                return;
+            }
             audio.removeEventListener('canplay', cpHandler);
             audio.removeEventListener('loadedmetadata', cpHandler);
-            return;
-        }
-        audio.removeEventListener('canplay', cpHandler);
-        audio.removeEventListener('loadedmetadata', cpHandler);
-        if (targetTime > 2 && !seekApplied) {
-            try { audio.currentTime = targetTime; } catch(e) {}
-            seekApplied = true;
-        }
-        updateAudioInfo();
+            if (targetTime > 2 && !seekApplied) {
+                try { audio.currentTime = targetTime; } catch(e) {}
+                seekApplied = true;
+            }
+            updateAudioInfo();
+        };
+        audio.addEventListener('canplay', cpHandler);
+        audio.addEventListener('loadedmetadata', cpHandler);
+        audio.load();
     };
-    audio.addEventListener('canplay', cpHandler);
-    audio.addEventListener('loadedmetadata', cpHandler);
-    audio.load();
+
+    // 同样，恢复时判断缓存，用 Blob 绕过网络层
+    _idbGet(ps.trackUrl, function(buffer) {
+        if (buffer && buffer.byteLength > 0) {
+            var blob = new Blob([buffer], { type: _guessMime(ps.trackUrl) });
+            _currentObjectUrl = URL.createObjectURL(blob);
+            doRestorePlay(_currentObjectUrl);
+        } else {
+            doRestorePlay(ps.trackUrl);
+        }
+    });
 }
 
 function _applyPendingSession() {
@@ -1692,37 +1708,58 @@ function playTrack(index) {
     _sessionCounted = false;
     _sessionSec     = 0;
 
-    // [重构] 移除前端 IDB Blob 读取，直接赋值 URL，交由 Service Worker 拦截响应
     _currentTrackOrigUrl = track.url;
-    audio.src = track.url;
-    audio.playbackRate = playbackRate;
+    _revokeCurrentObjectUrl(); // 清理上一首的内存占用
 
-    if (savedTime > 2) {
-        try { audio.currentTime = savedTime; } catch(e) {}
-        showToast('恢复进度: ' + fmtTime(savedTime));
-    }
+    // 内部执行播放的逻辑
+    var doPlay = function(srcUrl) {
+        if (_latestPlayRequestUrl !== track.url) return; // 异步拦截
+        audio.src = srcUrl;
+        audio.playbackRate = playbackRate;
 
-    if (document.visibilityState === 'hidden') {
-        safePlay();
-    } else {
-        var _metaLoaded = false;
-        var cpHandler = function() {
-            if (_latestPlayRequestUrl !== track.url) {
+        if (savedTime > 2) {
+            try { audio.currentTime = savedTime; } catch(e) {}
+            showToast('恢复进度: ' + fmtTime(savedTime));
+        }
+
+        if (document.visibilityState === 'hidden') {
+            safePlay();
+        } else {
+            var _metaLoaded = false;
+            var cpHandler = function() {
+                if (_latestPlayRequestUrl !== track.url) {
+                    audio.removeEventListener('canplay', cpHandler);
+                    audio.removeEventListener('loadedmetadata', cpHandler);
+                    return;
+                }
+                if (_metaLoaded) return;
+                _metaLoaded = true;
                 audio.removeEventListener('canplay', cpHandler);
                 audio.removeEventListener('loadedmetadata', cpHandler);
-                return;
+                audio.playbackRate = playbackRate;
+                safePlay();
+                updateAudioInfo();
+            };
+            audio.addEventListener('canplay', cpHandler);
+            audio.addEventListener('loadedmetadata', cpHandler);
+            audio.load();
+        }
+    };
+
+    // 【终极修复】如果是已缓存的音频，彻底抛弃 SW 拦截！
+    // 强制走 IDB -> Blob -> ObjectURL，绕过 iOS 后台网络死锁 Bug
+    if (_cacheStatus[track.url] === 'cached') {
+        _idbGet(track.url, function(buffer) {
+            if (buffer && buffer.byteLength > 0) {
+                var blob = new Blob([buffer], { type: _guessMime(track.url) });
+                _currentObjectUrl = URL.createObjectURL(blob);
+                doPlay(_currentObjectUrl);
+            } else {
+                doPlay(track.url); // 降级
             }
-            if (_metaLoaded) return;
-            _metaLoaded = true;
-            audio.removeEventListener('canplay', cpHandler);
-            audio.removeEventListener('loadedmetadata', cpHandler);
-            audio.playbackRate = playbackRate;
-            safePlay();
-            updateAudioInfo();
-        };
-        audio.addEventListener('canplay', cpHandler);
-        audio.addEventListener('loadedmetadata', cpHandler);
-        audio.load();
+        });
+    } else {
+        doPlay(track.url); // 未缓存的走正常网络请求
     }
 }
 
@@ -4609,20 +4646,36 @@ function _playFromCache(url, name) {
         showToast('播放：' + name);
         return;
     }
-    // 如果列表中没有，直接通过 SW 播放
+
+    _latestPlayRequestUrl = url;
     _currentTrackOrigUrl = url;
-    audio.src = url;
-    audio.playbackRate = playbackRate;
-    
-    var inner = document.getElementById('trackNameInner');
-    if (inner) {
-        inner.textContent = name;
-        applyMarquee(inner);
-    }
-    setCompact(false);
-    safePlay();
-    closeCacheManager();
-    showToast('离线播放：' + name);
+    _revokeCurrentObjectUrl();
+
+    var doPlay = function(srcUrl) {
+        if (_latestPlayRequestUrl !== url) return;
+        audio.src = srcUrl;
+        audio.playbackRate = playbackRate;
+        var inner = document.getElementById('trackNameInner');
+        if (inner) {
+            inner.textContent = name;
+            applyMarquee(inner);
+        }
+        setCompact(false);
+        safePlay();
+        closeCacheManager();
+        showToast('离线播放：' + name);
+    };
+
+    // 离线空间点击的音频绝对在本地，直接生成 Blob URL
+    _idbGet(url, function(buffer) {
+        if (buffer && buffer.byteLength > 0) {
+            var blob = new Blob([buffer], { type: _guessMime(url) });
+            _currentObjectUrl = URL.createObjectURL(blob);
+            doPlay(_currentObjectUrl);
+        } else {
+            doPlay(url);
+        }
+    });
 }
 
 function openCacheManager() {
