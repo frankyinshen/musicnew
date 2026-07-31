@@ -1750,30 +1750,38 @@ function setupMediaSession() {
             clearTimeout(_lockPlayWatchdogTimer);
             var verifyDone = false;
 
+            // 【关键修复】iOS 会在 play() 之后先让 currentTime 小跳一下制造"已经在播"的假象，
+            // 然后就把解码管线晾住不动。之前"跟起点比总位移"的判断方式会被这一下跳变骗过去。
+            // 改成：临近决策时刻再采样两次，看这个短窗口里是否有真实推进，而不是看总位移。
             function verifyRealPlayback() {
                 if (verifyDone) return;
-                verifyDone = true;
-                var advanced = audio.currentTime - baseTime;
-                dbg('lockplay:verify', 'advanced=' + advanced.toFixed(2));
-                if (!audio.paused && advanced > 0.3) {
-                    // currentTime 真的往前走了，这时候才放心把节奏汇报回 iOS
-                    dbg('lockplay:result', 'REAL');
-                    updateMediaPositionState();
-                } else {
-                    // currentTime 纹丝不动：这是"假播放"（iOS 自己在推算进度，实际没在解码/出声）
-                    // 钉死状态，主动 pause 一下让 iOS 重置内部状态，等用户下次点击再触发硬重启
-                    dbg('lockplay:result', 'FAKE');
-                    _lastLockPlayFailed = true;
-                    _isResumingFromLock = false;
-                    try { audio.pause(); } catch(e) {}
-                    try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
-                    updateMediaPositionState(0);
-                }
+                var t1 = audio.currentTime;
+                dbg('lockplay:verify1', 't1=' + t1.toFixed(2));
+                setTimeout(function() {
+                    if (verifyDone) return;
+                    verifyDone = true;
+                    var t2 = audio.currentTime;
+                    var windowAdvanced = t2 - t1;
+                    dbg('lockplay:verify2', 't2=' + t2.toFixed(2) + ' delta=' + windowAdvanced.toFixed(2));
+                    if (!audio.paused && windowAdvanced > 0.25) {
+                        dbg('lockplay:result', 'REAL');
+                        _lastLockPlayFailed = false;
+                        updateMediaPositionState();
+                    } else {
+                        dbg('lockplay:result', 'FAKE');
+                        _lastLockPlayFailed = true;
+                        _isResumingFromLock = false;
+                        try { audio.pause(); } catch(e) {}
+                        try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
+                        updateMediaPositionState(0);
+                    }
+                }, secondCheckGap);
             }
 
-            // 软播放（元素本来就有数据）900ms 足够判断；硬重启涉及重新 load()，
-            // 给够 3 秒再判定，避免网络稍慢时被误判为"假播放"
-            _lockPlayWatchdogTimer = setTimeout(verifyRealPlayback, didHardResume ? 3000 : 900);
+            // 软播放：500ms 后做第一次采样，再等 400ms 看有没有真推进（共约900ms，和原来预算一致）
+            // 硬重启涉及重新 load()：2500ms 后采样，再等 500ms（共约3000ms，和原来预算一致）
+            var secondCheckGap = didHardResume ? 500 : 400;
+            _lockPlayWatchdogTimer = setTimeout(verifyRealPlayback, didHardResume ? 2500 : 500);
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
