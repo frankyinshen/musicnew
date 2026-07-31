@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.28</title>
+    <title>英语精听播放器 v2.4.29</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.28</div>
+        <div class="version-tag">Build v2.4.29</div>
     </div>
 </div>
 
@@ -1274,6 +1274,7 @@ var _autoNextTimer = null;
 var _consecutiveErrors = 0;
 var _drawChartTimer = null;
 var _lockPlayWatchdogTimer = null; // 【新增】锁屏"假播放"看门狗
+var _lockNudgeActive = false; // 标记当前 Now Playing 标题是否被替换成了"请解锁"提示
 
 var playlists   = {};
 var progressDB  = {};
@@ -1616,6 +1617,7 @@ function setupAudioEvents() {
         clearTimeout(_lockPlayWatchdogTimer);
         _isResumingFromLock = false;
         _lastLockPlayFailed = false;
+        _clearLockNudge();
         try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
         updateMediaPositionState();
         setTimeout(_preloadNextTrack, 1000);
@@ -1711,48 +1713,61 @@ function updateMediaSession(track) {
     });
 }
 
+function _setLockNudge(msg) {
+    if (!('mediaSession' in navigator)) return;
+    var albumText = currentPath.indexOf('virtual:list:') === 0
+        ? currentPath.replace('virtual:list:', '') : '听力材料';
+    try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title:  msg,
+            artist: 'Evan Yin 英语精听播放器',
+            album:  albumText
+        });
+    } catch(e) {}
+    _lockNudgeActive = true;
+}
+function _clearLockNudge() {
+    if (!_lockNudgeActive) return;
+    _lockNudgeActive = false;
+    var track = playList[currentTrackIndex];
+    if (track) { updateMediaSession(track); }
+}
+
 function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     var ms = navigator.mediaSession;
     var handlers = [
         ['play', function() {
             _wasPlayingBeforeHide = true;
-            dbg('lockplay:enter', 'hidden=' + (document.visibilityState === 'hidden') + ' lastFailed=' + _lastLockPlayFailed);
-
             var isHidden = (document.visibilityState === 'hidden');
-            if (isHidden) {
-                updateMediaPositionState(0); // 立刻钉死，不让 iOS 自行推算进度
-            }
+            dbg('lockplay:enter', 'hidden=' + isHidden + ' lastFailed=' + _lastLockPlayFailed);
 
-            var retryUrl       = _currentTrackOrigUrl || audio.src;
-            var baseTime        = audio.currentTime;
-            var didHardResume   = false;
-
-            if (_lastLockPlayFailed && !_isResumingFromLock) {
-                _isResumingFromLock = true;
-                didHardResume = true;
-                dbg('lockplay:branch', 'hardResume');
-                console.warn('[LockScreen] 上次播放已知失败，本次尝试硬重启恢复');
-                _doLoadResume(retryUrl, baseTime);
-            } else {
-                dbg('lockplay:branch', 'softPlay');
-                var playPromise = audio.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(function(e) {
-                        dbg('lockplay:softPlayReject', e && e.name);
-                        console.warn('Lock screen play failed:', e && e.name);
-                    });
+            if (!isHidden) {
+                // 前台场景（比如蓝牙耳机按钮触发），走最简单的正常播放即可
+                var fgPromise = audio.play();
+                if (fgPromise !== undefined) {
+                    fgPromise.catch(function(e) { console.warn('play failed:', e && e.name); });
                 }
+                return;
             }
 
-            if (!isHidden) return; // 前台场景交给原有机制，这里只处理锁屏后台场景
+            // ---- 以下只处理"完全锁屏"场景 ----
+            // 两轮真机测试证实：在这个场景下 audio.load() 硬重启完全没有作用
+            // （等5秒 canplay/error 一个事件都不触发），所以不再浪费时间尝试硬重启，
+            // 只做快速判断 + 用锁屏标题提示用户，恢复交给已经验证有效的"解锁自动续播"逻辑
+            updateMediaPositionState(0);
+            var baseTime = audio.currentTime;
+            dbg('lockplay:branch', 'softPlay(hidden)');
+            var playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(function(e) {
+                    dbg('lockplay:softPlayReject', e && e.name);
+                });
+            }
 
             clearTimeout(_lockPlayWatchdogTimer);
             var verifyDone = false;
 
-            // 【关键修复】iOS 会在 play() 之后先让 currentTime 小跳一下制造"已经在播"的假象，
-            // 然后就把解码管线晾住不动。之前"跟起点比总位移"的判断方式会被这一下跳变骗过去。
-            // 改成：临近决策时刻再采样两次，看这个短窗口里是否有真实推进，而不是看总位移。
             function verifyRealPlayback() {
                 if (verifyDone) return;
                 var t1 = audio.currentTime;
@@ -1766,22 +1781,20 @@ function setupMediaSession() {
                     if (!audio.paused && windowAdvanced > 0.25) {
                         dbg('lockplay:result', 'REAL');
                         _lastLockPlayFailed = false;
+                        _clearLockNudge();
                         updateMediaPositionState();
                     } else {
-                        dbg('lockplay:result', 'FAKE');
+                        dbg('lockplay:result', 'FAKE-locked-giveup');
                         _lastLockPlayFailed = true;
-                        _isResumingFromLock = false;
                         try { audio.pause(); } catch(e) {}
                         try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
                         updateMediaPositionState(0);
+                        _setLockNudge('🔒 请点亮屏幕后继续播放');
                     }
-                }, secondCheckGap);
+                }, 400);
             }
 
-            // 软播放：500ms 后做第一次采样，再等 400ms 看有没有真推进（共约900ms，和原来预算一致）
-            // 硬重启涉及重新 load()：2500ms 后采样，再等 500ms（共约3000ms，和原来预算一致）
-            var secondCheckGap = didHardResume ? 500 : 400;
-            _lockPlayWatchdogTimer = setTimeout(verifyRealPlayback, didHardResume ? 2500 : 500);
+            _lockPlayWatchdogTimer = setTimeout(verifyRealPlayback, 500);
         }],
         ['pause', function() {
             clearTimeout(_lockPlayWatchdogTimer);
