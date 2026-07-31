@@ -1222,6 +1222,25 @@
     </div>
 </div>
 
+<div class="backup-sheet-overlay" id="debugLogOverlay" onclick="closeDebugLogViewer()"></div>
+<div class="backup-sheet" id="debugLogSheet" style="max-height:85vh;">
+    <div class="bs-handle"></div>
+    <div class="bs-title">🐞 调试日志</div>
+    <div class="bs-sub">锁屏播放排查专用，仅保存在本机</div>
+    <div style="margin:0 16px 12px;background:var(--ios-card);border-radius:12px;padding:12px;max-height:50vh;overflow-y:auto;">
+        <pre id="debugLogText" style="font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--ios-text);margin:0;font-family:monospace;"></pre>
+    </div>
+    <div class="bs-row" onclick="copyDebugLog()">
+        <span class="bs-row-icon">📋</span>
+        <div><div>复制日志</div><div class="bs-row-sub">粘贴发给我分析即可</div></div>
+    </div>
+    <div class="bs-row bs-row-warn" onclick="clearDebugLog()">
+        <span class="bs-row-icon">🗑️</span>
+        <div><div>清空日志</div></div>
+    </div>
+    <div class="bs-cancel" onclick="closeDebugLogViewer()">关闭</div>
+</div>
+
 <input type="file" id="bsFileInput" accept=".json" style="display:none" onchange="onImportFileChosen(event)">
 
 <script>
@@ -1260,6 +1279,56 @@ var playlists   = {};
 var progressDB  = {};
 try { playlists  = JSON.parse(localStorage.getItem('my_playlists_v3') || '{}'); } catch(e) {}
 try { progressDB = JSON.parse(localStorage.getItem('audio_progress_v2') || '{}'); } catch(e) {}
+
+// ============ 锁屏播放调试日志（排查专用，可随时删除） ============
+function pad3(n) { if (n < 10) return '00' + n; if (n < 100) return '0' + n; return '' + n; }
+var DEBUG_LOG_KEY = 'debug_lock_log_v1';
+var _dbgLog = [];
+try { _dbgLog = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]'); } catch(e) {}
+
+function dbg(tag, extra) {
+    var now = new Date();
+    var entry = {
+        t: pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds()) + '.' + pad3(now.getMilliseconds()),
+        vis: document.visibilityState,
+        ct: (typeof audio !== 'undefined' && audio && !isNaN(audio.currentTime)) ? audio.currentTime.toFixed(2) : '-',
+        paused: (typeof audio !== 'undefined' && audio) ? audio.paused : '-',
+        tag: tag,
+        extra: extra || ''
+    };
+    _dbgLog.push(entry);
+    if (_dbgLog.length > 300) _dbgLog = _dbgLog.slice(-300);
+    try { localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(_dbgLog)); } catch(e) {}
+}
+
+function openDebugLogViewer() {
+    var lines = _dbgLog.map(function(e) {
+        return e.t + ' | ' + e.tag + ' | vis=' + e.vis + ' paused=' + e.paused + ' ct=' + e.ct + (e.extra ? ' | ' + e.extra : '');
+    });
+    document.getElementById('debugLogText').textContent = lines.length ? lines.join('\n') : '（暂无日志，先按流程测试一次）';
+    document.getElementById('debugLogOverlay').classList.add('open');
+    document.getElementById('debugLogSheet').classList.add('open');
+}
+function closeDebugLogViewer() {
+    document.getElementById('debugLogOverlay').classList.remove('open');
+    document.getElementById('debugLogSheet').classList.remove('open');
+}
+function copyDebugLog() {
+    var text = document.getElementById('debugLogText').textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() { showToast('已复制，粘贴发给我即可'); })
+            .catch(function() { showToast('复制失败，请长按文本手动选择'); });
+    } else {
+        showToast('请长按文本手动复制');
+    }
+}
+function clearDebugLog() {
+    _dbgLog = [];
+    try { localStorage.removeItem(DEBUG_LOG_KEY); } catch(e) {}
+    openDebugLogViewer();
+    showToast('日志已清空');
+}
+// ============ 调试日志结束 ============
 
 var _SESSION_KEY = 'player_last_session_v1';
 var _pendingSession = null;
@@ -1441,6 +1510,16 @@ function init() {
         var iconLink = document.querySelector('link[rel="apple-touch-icon"]');
         if (iconLink) iconLink.href = pngIconUrl;
     } catch(e) { console.warn('Dynamic apple-touch-icon generation failed', e); }
+
+    var vTag = document.querySelector('.version-tag');
+    if (vTag) {
+        var vPressTimer = null;
+        vTag.addEventListener('touchstart', function() {
+            vPressTimer = setTimeout(function() { openDebugLogViewer(); }, 600);
+        }, { passive: true });
+        vTag.addEventListener('touchend', function() { clearTimeout(vPressTimer); });
+        vTag.addEventListener('touchmove', function() { clearTimeout(vPressTimer); });
+    }
 }
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
@@ -1510,6 +1589,7 @@ function setupAudioEvents() {
         // 【必删】也不要在这里调用 updateMediaPositionState()
     });
     audio.addEventListener('pause',  function() {
+        dbg('event:pause');
         document.getElementById('iconPlay').style.display  = 'block';
         document.getElementById('iconPause').style.display = 'none';
         saveProgress();
@@ -1525,12 +1605,14 @@ function setupAudioEvents() {
         clearTimeout(_audioRetryTimer);
 
         if (document.visibilityState === 'hidden') {
+            dbg('event:playing', 'hidden-branch');
             // 后台场景：playing 触发不代表真的出声了（可能只是 iOS 自己在推算进度）
             // 交给锁屏 play 回调里的 verifyRealPlayback 稍后做二次确认，这里先不清状态、不汇报进度
             setTimeout(_preloadNextTrack, 1000);
             return;
         }
 
+        dbg('event:playing', 'foreground-confirmed');
         clearTimeout(_lockPlayWatchdogTimer);
         _isResumingFromLock = false;
         _lastLockPlayFailed = false;
@@ -1584,6 +1666,13 @@ function setupAudioEvents() {
 var _lastPosStateUpdate = 0;
 function onTU() {
     if (!audio.duration || isNaN(audio.duration)) return;
+    if (document.visibilityState === 'hidden') {
+        var _dbgNow = Date.now();
+        if (!onTU._lastDbg || _dbgNow - onTU._lastDbg > 1000) {
+            onTU._lastDbg = _dbgNow;
+            dbg('timeupdate');
+        }
+    }
     if (!isDraggingSlider) {
         var pct = (audio.currentTime / audio.duration) * 100;
         slider.value = pct;
@@ -1628,6 +1717,7 @@ function setupMediaSession() {
     var handlers = [
         ['play', function() {
             _wasPlayingBeforeHide = true;
+            dbg('lockplay:enter', 'hidden=' + (document.visibilityState === 'hidden') + ' lastFailed=' + _lastLockPlayFailed);
 
             var isHidden = (document.visibilityState === 'hidden');
             if (isHidden) {
@@ -1641,12 +1731,15 @@ function setupMediaSession() {
             if (_lastLockPlayFailed && !_isResumingFromLock) {
                 _isResumingFromLock = true;
                 didHardResume = true;
+                dbg('lockplay:branch', 'hardResume');
                 console.warn('[LockScreen] 上次播放已知失败，本次尝试硬重启恢复');
                 _doLoadResume(retryUrl, baseTime);
             } else {
+                dbg('lockplay:branch', 'softPlay');
                 var playPromise = audio.play();
                 if (playPromise !== undefined) {
                     playPromise.catch(function(e) {
+                        dbg('lockplay:softPlayReject', e && e.name);
                         console.warn('Lock screen play failed:', e && e.name);
                     });
                 }
@@ -1661,12 +1754,15 @@ function setupMediaSession() {
                 if (verifyDone) return;
                 verifyDone = true;
                 var advanced = audio.currentTime - baseTime;
+                dbg('lockplay:verify', 'advanced=' + advanced.toFixed(2));
                 if (!audio.paused && advanced > 0.3) {
                     // currentTime 真的往前走了，这时候才放心把节奏汇报回 iOS
+                    dbg('lockplay:result', 'REAL');
                     updateMediaPositionState();
                 } else {
                     // currentTime 纹丝不动：这是"假播放"（iOS 自己在推算进度，实际没在解码/出声）
                     // 钉死状态，主动 pause 一下让 iOS 重置内部状态，等用户下次点击再触发硬重启
+                    dbg('lockplay:result', 'FAKE');
                     _lastLockPlayFailed = true;
                     _isResumingFromLock = false;
                     try { audio.pause(); } catch(e) {}
@@ -2283,7 +2379,7 @@ function addToPlaylist(name, targetTrack) {
 }
 
 function createNewPlaylistFromModal(targetTrack) {
-    var name = prompt('新收藏夹名称:');
+    var name = prompt('新收藏夹名称:')
     if (name && name.trim()) {
         var c = name.trim();
         if (!playlists[c]) playlists[c] = [];
@@ -3970,6 +4066,7 @@ function _iosLockScreenResume() {
 }
 
 function _doLoadResume(src, rTime) {
+    dbg('hardResume:start');
     audio.pause();
     audio.src = src;
     audio.playbackRate = playbackRate;
@@ -3979,6 +4076,7 @@ function _doLoadResume(src, rTime) {
     function finalPlay() {
         if (_resumeResolved) return;
         _resumeResolved = true;
+        dbg('hardResume:finalPlay');
         if (rTime > 0.5) { try { audio.currentTime = rTime; } catch(e) {} }
         safePlay().then(function() { _isResumingFromLock = false; })
                   .catch(function() { _isResumingFromLock = false; });
@@ -3999,6 +4097,7 @@ function _doLoadResume(src, rTime) {
 
     setTimeout(function() {
         if (!_resumeResolved) {
+            dbg('hardResume:timeout');
             audio.removeEventListener('canplay', onReady);
             audio.removeEventListener('error', onErr);
             _resumeResolved = true;
