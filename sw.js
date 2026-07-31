@@ -1,4 +1,4 @@
-var CACHE_NAME = 'player-shell-v2.4.30';
+var CACHE_NAME = 'player-shell-v2.4.31';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
