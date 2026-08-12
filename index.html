@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.31</title>
+    <title>英语精听播放器 v2.4.32</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.31</div>
+        <div class="version-tag">Build v2.4.32</div>
     </div>
 </div>
 
@@ -1431,6 +1431,11 @@ function _quickRestoreUI() {
             var blob = new Blob([buffer], { type: _guessMime(ps.trackUrl) });
             _currentObjectUrl = URL.createObjectURL(blob);
             doRestorePlay(_currentObjectUrl);
+        } else if (navigator.onLine === false) {
+            // 【新增】离线且该曲目未缓存，不发起网络请求，直接提示
+            document.getElementById('trackTime').textContent = fmtTime(ps.trackTime) + ' / --:--';
+            document.getElementById('audioInfo').textContent = '⚠️ 未离线缓存，请联网后播放';
+            showToast('📶 离线状态：该曲目未缓存');
         } else {
             doRestorePlay(ps.trackUrl);
         }
@@ -2454,6 +2459,13 @@ function fetchDirectory(url) {
     if (!rawDisp || rawDisp === '') rawDisp = '/';
     try { rawDisp = decodeURIComponent(rawDisp); } catch(e) {}
     document.getElementById('currentFolder').textContent = rawDisp;
+
+    // 【新增】开局就离线，不用等 XHR 报错/超时，直接走离线兜底
+    if (navigator.onLine === false) {
+        dbg('fetchDirectory:offlineSkip', url);
+        _fallbackOffline();
+        return;
+    }
 
     var prefix = url.replace(SITE_ROOT, '');
     if (prefix.indexOf('http') === 0) {
@@ -4157,6 +4169,17 @@ audio.addEventListener('error', function() {
     var err = audio.error;
     if (!err) return;
     try { audio.pause(); } catch(e) {} 
+
+    // 【新增】已知离线就别重试了，重试也是白等
+    if (navigator.onLine === false) {
+        _audioRetryCount = 0;
+        clearTimeout(_audioRetryTimer);
+        dbg('audioError:offlineSkip');
+        showToast('📶 处于离线状态，该音频未缓存，无法播放');
+        document.getElementById('iconPlay').style.display  = 'block';
+        document.getElementById('iconPause').style.display = 'none';
+        return;
+    }
 
     var isRetryable = (
         err.code === MediaError.MEDIA_ERR_NETWORK ||
