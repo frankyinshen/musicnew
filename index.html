@@ -1095,7 +1095,7 @@
             <button class="pill-btn" id="wakeLockBtn" onclick="toggleWakeLock()" aria-label="屏幕常亮">
                 <span>💡</span><span id="wakeLockLabel">常亮关</span>
             </button>
-            <button class="pill-btn" id="timerBtn" onclick="setTimer()" aria-label="定时停止">
+            <button class="pill-btn" id="timerBtn" onclick="setTimer()" aria-label="定时停止（长按：播完即停）">
                 <span>🌙</span><span id="timerLabel">定时</span>
             </button>
             <button class="pill-btn" onclick="fetchDirectory('virtual:folders')" aria-label="我的收藏">
@@ -1526,6 +1526,9 @@ function init() {
         vTag.addEventListener('touchend', function() { clearTimeout(vPressTimer); });
         vTag.addEventListener('touchmove', function() { clearTimeout(vPressTimer); });
     }
+
+    // 【新增】长按"定时"按钮，切换"播完当前曲目后停止"
+    setupTimerLongPress(document.getElementById('timerBtn'));
 }
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
@@ -1631,6 +1634,17 @@ function setupAudioEvents() {
         clearMediaSession();
         var _endedKey = _currentTrackOrigUrl || audio.src;
         try { delete progressDB[_endedKey]; localStorage.setItem('audio_progress_v2', JSON.stringify(progressDB)); } catch(e) {}
+
+        // 【新增】"播完即停"：本曲结束后不再继续播放（忽略单曲/列表循环）
+        if (_stopAfterTrack) {
+            _stopAfterTrack = false;
+            _updateTimerBtnUI();
+            document.getElementById('iconPlay').style.display  = 'block';
+            document.getElementById('iconPause').style.display = 'none';
+            showToast('🌙 已播完，自动停止');
+            return;
+        }
+
         if (currentTrackIndex < 0) {
             if (_currentTrackOrigUrl) {
                 audio.currentTime = 0;
@@ -2331,6 +2345,7 @@ function resetAB() {
 
 var _sleepTimerEnd  = 0;
 var _sleepCountdown = null;
+var _stopAfterTrack = false; // 【新增】长按🌙按钮开启：播完当前曲目后自动停止
 
 function _updateTimerLabel() {
     var remaining = Math.max(0, _sleepTimerEnd - Date.now());
@@ -2346,6 +2361,13 @@ function _updateTimerLabel() {
 }
 
 function setTimer() {
+    // 【新增】如果当前处于"播完即停"模式，短按视为取消该模式
+    if (_stopAfterTrack) {
+        _stopAfterTrack = false;
+        _updateTimerBtnUI();
+        showToast('已取消"播完即停"');
+        return;
+    }
     if (sleepTimer) {
         clearTimeout(sleepTimer);  sleepTimer = null;
         clearInterval(_sleepCountdown); _sleepCountdown = null;
@@ -2369,6 +2391,66 @@ function setTimer() {
         showToast('定时停止');
     }, ms);
     showToast('定时 ' + i + ' 分钟后停止');
+}
+
+// 【新增】长按🌙按钮：切换"播完当前曲目后自动停止"
+function toggleStopAfterTrack() {
+    if (!audio.src || audio.src === window.location.href) {
+        showToast('请先播放歌曲');
+        return;
+    }
+    if (sleepTimer) {
+        showToast('请先取消当前的定时停止，再使用"播完即停"');
+        return;
+    }
+    _stopAfterTrack = !_stopAfterTrack;
+    _updateTimerBtnUI();
+    showToast(_stopAfterTrack ? '🌙 本曲播完后将自动停止' : '已取消"播完即停"');
+}
+
+function _updateTimerBtnUI() {
+    var btn   = document.getElementById('timerBtn');
+    var label = document.getElementById('timerLabel');
+    if (!btn || !label) return;
+    if (_stopAfterTrack) {
+        btn.className = 'pill-btn active';
+        label.textContent = '播完停';
+    } else if (!sleepTimer) {
+        btn.className = 'pill-btn';
+        label.textContent = '定时';
+    }
+}
+
+function setupTimerLongPress(el) {
+    if (!el) return;
+    var _timerLongPressTimer = null;
+    var _isTimerLongPress    = false;
+
+    el.addEventListener('touchstart', function() {
+        _isTimerLongPress = false;
+        _timerLongPressTimer = setTimeout(function() {
+            _timerLongPressTimer = null;
+            _isTimerLongPress = true;
+            toggleStopAfterTrack();
+        }, 500);
+    }, { passive: true });
+
+    el.addEventListener('touchend', function() {
+        clearTimeout(_timerLongPressTimer);
+        _timerLongPressTimer = null;
+    });
+    el.addEventListener('touchmove', function() {
+        clearTimeout(_timerLongPressTimer);
+        _timerLongPressTimer = null;
+    });
+
+    el.addEventListener('click', function(e) {
+        if (_isTimerLongPress) {
+            e.stopPropagation();
+            e.preventDefault();
+            _isTimerLongPress = false;
+        }
+    }, true);
 }
 
 function openPlaylistModal(targetTrack) {
