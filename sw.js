@@ -1,4 +1,4 @@
-var CACHE_NAME = 'player-shell-v2.4.31';
+var CACHE_NAME = 'player-shell-v2.4.32';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
@@ -139,21 +139,30 @@ self.addEventListener('fetch', function(e) {
     }
 
     if (req.mode === 'navigate') {
-        var fetchPromise = fetch(req).then(function(resp) {
-            if (resp && resp.ok) {
-                var respClone = resp.clone();
-                caches.open(CACHE_NAME).then(function(cache) {
-                    cache.put(SHELL_URL, respClone);
-                });
-            }
-            return resp;
-        });
-
-        e.waitUntil(fetchPromise.catch(function(){}));
-
         e.respondWith(
             caches.match(SHELL_URL).then(function(cached) {
-                return cached || fetchPromise;
+                // 后台悄悄拉取最新版本更新缓存，不阻塞本次响应，失败也无所谓
+                var netUpdate = fetch(req).then(function(resp) {
+                    if (resp && resp.ok) {
+                        var respClone = resp.clone();
+                        caches.open(CACHE_NAME).then(function(cache) {
+                            cache.put(SHELL_URL, respClone);
+                        });
+                    }
+                    return resp;
+                }).catch(function() { return null; });
+
+                if (cached) {
+                    e.waitUntil(netUpdate);
+                    return cached;
+                }
+                // 缓存里没有壳，只能等网络；网络也没有的话给个兜底页，别让浏览器甩原生离线错误页
+                return netUpdate.then(function(resp) {
+                    return resp || new Response(
+                        '<!doctype html><meta charset="utf-8"><body style="font-family:-apple-system,sans-serif;padding:60px 24px;text-align:center;color:#666;">📶 当前离线，且本机暂无可用缓存<br><br>请连接一次网络后重新打开</body>',
+                        { status: 200, headers: { 'Content-Type': 'text/html;charset=utf-8' } }
+                    );
+                });
             })
         );
         return;
