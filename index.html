@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.36</title>
+    <title>英语精听播放器 v2.4.32</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.36</div>
+        <div class="version-tag">Build v2.4.32</div>
     </div>
 </div>
 
@@ -4247,26 +4247,12 @@ var _audioRetryCount = 0;
 var _audioRetryMax   = 3;
 var _audioRetryTimer = null;
 
-// 新增一个状态标记，防止死循环降级
-var _blobFallbackAttempted = {};
-
-// 记录已经尝试过降级的链接，防止死循环
-var _blobFallbackAttempted = {};
-
-// 记录已经尝试过重试的链接，防止死循环
-var _blobFallbackAttempted = {};
-
-var _blobFallbackAttempted = {};
-
 audio.addEventListener('error', function() {
     var err = audio.error;
     if (!err) return;
     try { audio.pause(); } catch(e) {} 
 
-    var currentSrc = audio.src || '';
-    var isBlob = currentSrc.indexOf('blob:') === 0;
-    var origUrl = _currentTrackOrigUrl || currentSrc;
-
+    // 【新增】已知离线就别重试了，重试也是白等
     if (navigator.onLine === false) {
         _audioRetryCount = 0;
         clearTimeout(_audioRetryTimer);
@@ -4277,61 +4263,17 @@ audio.addEventListener('error', function() {
         return;
     }
 
-    // 【核心降级：错误码 4 强制 Blob 转换】
-    if (!isBlob && origUrl.indexOf('http') === 0 && !_blobFallbackAttempted[origUrl]) {
-        _blobFallbackAttempted[origUrl] = true;
-        _audioRetryCount = 0; 
-        clearTimeout(_audioRetryTimer);
-        
-        showToast('正在转换格式...');
-        var resumeTime = audio.currentTime > 2 ? audio.currentTime : (progressDB[origUrl] || 0);
-        
-        // 用 fetch 拿二进制，强制伪装成 audio/mpeg，彻底绕过服务器 Header 问题
-        fetch(origUrl, { cache: 'no-store' })
-            .then(function(res) {
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                return res.arrayBuffer();
-            })
-            .then(function(arrayBuffer) {
-                if (_latestPlayRequestUrl !== origUrl) return; 
-                
-                var blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
-                _revokeCurrentObjectUrl();
-                _currentObjectUrl = URL.createObjectURL(blob);
-                
-                audio.src = _currentObjectUrl;
-                audio.playbackRate = playbackRate;
-                
-                if (resumeTime > 2) {
-                    try { audio.currentTime = resumeTime; } catch(e) {}
-                }
-                safePlay();
-                updateAudioInfo();
-                _consecutiveErrors = 0;
-                showToast('强制转换播放成功');
-            })
-            .catch(function(fetchErr) {
-                alert('❌ 强拉通道失败\n原因: ' + fetchErr.message + '\n可能遭遇 CORS 拦截。');
-                _consecutiveErrors++;
-                if (playList && playList.length > 1) {
-                    _autoNextTimer = setTimeout(playNext, 2000);
-                }
-            });
-        return;
-    }
-
-    // === 以下为原有的重试和兜底逻辑 ===
     var isRetryable = (
         err.code === MediaError.MEDIA_ERR_NETWORK ||
         err.code === MediaError.MEDIA_ERR_DECODE  ||
         (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED &&
-         currentSrc && currentSrc.toLowerCase().indexOf('.m4a') > -1)
+         audio.src && audio.src.toLowerCase().indexOf('.m4a') > -1)
     );
 
     if (isRetryable && _audioRetryCount < _audioRetryMax) {
         _audioRetryCount++;
         var delay = _audioRetryCount * 1500;
-        var retryUrl = currentSrc;
+        var retryUrl = audio.src;
         showToast('加载失败，' + (_audioRetryCount) + '/' + _audioRetryMax + ' 重试中…');
         clearTimeout(_audioRetryTimer);
         _audioRetryTimer = setTimeout(function() {
@@ -4342,117 +4284,35 @@ audio.addEventListener('error', function() {
 
     _audioRetryCount = 0;
     var msg = '⚠️ 音频加载失败';
-    if (err.code === MediaError.MEDIA_ERR_NETWORK)           msg = '⚠️ 网络错误';
+    if (err.code === MediaError.MEDIA_ERR_NETWORK)           msg = '⚠️ 网络错误，请检查网络连接';
     if (err.code === MediaError.MEDIA_ERR_DECODE)            msg = '⚠️ 音频解码失败';
-    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = '⚠️ 不支持此格式';
-    
-    alert('❌ 最终播放失败\n' + msg + '\n即将尝试下一首...');
-
+    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = '⚠️ 不支持此音频格式';
+    showToast(msg);
     document.getElementById('iconPlay').style.display  = 'block';
     document.getElementById('iconPause').style.display = 'none';
+    
+    if (navigator.onLine === false) {
+        showToast('📶 处于离线状态，已停止加载未缓存音频');
+        audio.pause();
+        document.getElementById('iconPlay').style.display  = 'block';
+        document.getElementById('iconPause').style.display = 'none';
+        return;
+    }
 
     _consecutiveErrors++;
     if (_consecutiveErrors >= playList.length) {
+        showToast('⚠️ 当前列表所有音频加载失败，已停止');
+        document.getElementById('iconPlay').style.display  = 'block';
+        document.getElementById('iconPause').style.display = 'none';
         return;
     }
 
     if (playList && playList.length > 1) {
+        showToast('即将播放下一首...');
+        clearTimeout(_autoNextTimer);
         _autoNextTimer = setTimeout(playNext, 2000);
     }
 });
-
-// 【新增】XHR 降级函数
-function _fallbackToBlobPlay(url) {
-    var resumeTime = (audio.currentTime > 2) ? audio.currentTime : (progressDB[url] || 0);
-    showToast('正在使用备用通道拉取...');
-    
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, true);
-    xhr.responseType = 'blob';
-    xhr.setRequestHeader('Cache-Control', 'no-cache');
-    
-    xhr.onload = function() {
-        if (xhr.status >= 200 && xhr.status < 300) {
-            var blob = xhr.response;
-            if (_latestPlayRequestUrl !== url) return; 
-            
-            _revokeCurrentObjectUrl();
-            _currentObjectUrl = URL.createObjectURL(blob);
-            
-            audio.src = _currentObjectUrl;
-            audio.playbackRate = playbackRate;
-            
-            if (resumeTime > 2) {
-                try { audio.currentTime = resumeTime; } catch(e) {}
-            }
-            safePlay();
-            updateAudioInfo();
-            _consecutiveErrors = 0;
-            showToast('备用通道加载成功');
-        } else {
-            showToast('备用失败: HTTP ' + xhr.status);
-            _triggerNextAfterFail();
-        }
-    };
-    
-    xhr.onerror = function() {
-        showToast('备用通道网络错误(可能跨域)');
-        _triggerNextAfterFail();
-    };
-    
-    xhr.ontimeout = function() {
-        showToast('备用通道超时');
-        _triggerNextAfterFail();
-    };
-    
-    try { xhr.send(); } catch(e) {
-        showToast('备用异常: ' + e.message);
-        _triggerNextAfterFail();
-    }
-}
-
-function _triggerNextAfterFail() {
-    if (playList && playList.length > 1) {
-        _autoNextTimer = setTimeout(playNext, 2000);
-    }
-}
-
-// 【新增】降级强拉函数，直接用 fetch 下载成 Blob 再给 audio 播
-function _fallbackToBlobPlay(url) {
-    // 记录当前播放时间，防止拉取完重新开始
-    var resumeTime = (audio.currentTime > 2) ? audio.currentTime : (progressDB[url] || 0);
-    
-    fetch(url, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
-        .then(function(res) {
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            return res.blob();
-        })
-        .then(function(blob) {
-            // 二次确认：如果在这期间用户切歌了，就丢弃这个请求
-            if (_latestPlayRequestUrl !== url) return;
-            
-            _revokeCurrentObjectUrl(); // 清理上一个 Blob
-            _currentObjectUrl = URL.createObjectURL(blob);
-            
-            audio.src = _currentObjectUrl;
-            audio.playbackRate = playbackRate;
-            
-            if (resumeTime > 2) {
-                try { audio.currentTime = resumeTime; } catch(e) {}
-            }
-            safePlay();
-            updateAudioInfo();
-            _consecutiveErrors = 0; // 播放成功，错误计数清零
-        })
-        .catch(function(err) {
-            console.warn('[Fallback] Blob 强拉失败:', err);
-            showToast('备用通道也失败，即将尝试下一首...');
-            // 如果降级失败，走原有的跳下一首逻辑
-            if (playList && playList.length > 1) {
-                _autoNextTimer = setTimeout(playNext, 2000);
-            }
-        });
-}
 
 function checkFictionRatio() {
     var today = todayKey();
