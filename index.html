@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.33</title>
+    <title>英语精听播放器 v2.4.34</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.33</div>
+        <div class="version-tag">Build v2.4.34</div>
     </div>
 </div>
 
@@ -4250,6 +4250,9 @@ var _audioRetryTimer = null;
 // 新增一个状态标记，防止死循环降级
 var _blobFallbackAttempted = {};
 
+// 记录已经尝试过降级的链接，防止死循环
+var _blobFallbackAttempted = {};
+
 audio.addEventListener('error', function() {
     var err = audio.error;
     if (!err) return;
@@ -4259,7 +4262,7 @@ audio.addEventListener('error', function() {
     var isBlob = currentSrc.indexOf('blob:') === 0;
     var origUrl = _currentTrackOrigUrl || currentSrc;
 
-    // 【离线处理】已知离线就别重试了
+    // 离线状态直接拦截
     if (navigator.onLine === false) {
         _audioRetryCount = 0;
         clearTimeout(_audioRetryTimer);
@@ -4270,16 +4273,15 @@ audio.addEventListener('error', function() {
         return;
     }
 
-    // 【核心降级逻辑】如果网络正常，且是网络请求报错（尤其是iOS说不支持格式时）
-    // 且还没尝试过Blob降级，并且当前不是Blob链接
+    // 【核心降级拦截】
+    // 如果不是 blob，且是 http 链接，且没降级过，直接触发降级通道
     if (!isBlob && origUrl.indexOf('http') === 0 && !_blobFallbackAttempted[origUrl]) {
         dbg('audioError:triggerBlobFallback', err.code);
-        showToast('检测到格式异常，正在切换备用通道...');
         _blobFallbackAttempted[origUrl] = true;
-        _audioRetryCount = 0; // 重置普通重试计数
+        _audioRetryCount = 0; 
         clearTimeout(_audioRetryTimer);
         
-        // 调用下面的降级强拉函数
+        // 开始 XHR 降级强拉
         _fallbackToBlobPlay(origUrl);
         return;
     }
@@ -4312,10 +4314,20 @@ audio.addEventListener('error', function() {
     showToast(msg);
     document.getElementById('iconPlay').style.display  = 'block';
     document.getElementById('iconPause').style.display = 'none';
+    
+    if (navigator.onLine === false) {
+        showToast('📶 处于离线状态，已停止加载未缓存音频');
+        audio.pause();
+        document.getElementById('iconPlay').style.display  = 'block';
+        document.getElementById('iconPause').style.display = 'none';
+        return;
+    }
 
     _consecutiveErrors++;
     if (_consecutiveErrors >= playList.length) {
         showToast('⚠️ 当前列表所有音频加载失败，已停止');
+        document.getElementById('iconPlay').style.display  = 'block';
+        document.getElementById('iconPause').style.display = 'none';
         return;
     }
 
@@ -4325,6 +4337,62 @@ audio.addEventListener('error', function() {
         _autoNextTimer = setTimeout(playNext, 2000);
     }
 });
+
+// 【新增】XHR 降级函数
+function _fallbackToBlobPlay(url) {
+    var resumeTime = (audio.currentTime > 2) ? audio.currentTime : (progressDB[url] || 0);
+    showToast('正在使用备用通道拉取...');
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'blob';
+    xhr.setRequestHeader('Cache-Control', 'no-cache');
+    
+    xhr.onload = function() {
+        if (xhr.status >= 200 && xhr.status < 300) {
+            var blob = xhr.response;
+            if (_latestPlayRequestUrl !== url) return; 
+            
+            _revokeCurrentObjectUrl();
+            _currentObjectUrl = URL.createObjectURL(blob);
+            
+            audio.src = _currentObjectUrl;
+            audio.playbackRate = playbackRate;
+            
+            if (resumeTime > 2) {
+                try { audio.currentTime = resumeTime; } catch(e) {}
+            }
+            safePlay();
+            updateAudioInfo();
+            _consecutiveErrors = 0;
+            showToast('备用通道加载成功');
+        } else {
+            showToast('备用失败: HTTP ' + xhr.status);
+            _triggerNextAfterFail();
+        }
+    };
+    
+    xhr.onerror = function() {
+        showToast('备用通道网络错误(可能跨域)');
+        _triggerNextAfterFail();
+    };
+    
+    xhr.ontimeout = function() {
+        showToast('备用通道超时');
+        _triggerNextAfterFail();
+    };
+    
+    try { xhr.send(); } catch(e) {
+        showToast('备用异常: ' + e.message);
+        _triggerNextAfterFail();
+    }
+}
+
+function _triggerNextAfterFail() {
+    if (playList && playList.length > 1) {
+        _autoNextTimer = setTimeout(playNext, 2000);
+    }
+}
 
 // 【新增】降级强拉函数，直接用 fetch 下载成 Blob 再给 audio 播
 function _fallbackToBlobPlay(url) {
