@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.32</title>
+    <title>英语精听播放器 v2.4.33</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.32</div>
+        <div class="version-tag">Build v2.4.33</div>
     </div>
 </div>
 
@@ -4247,12 +4247,19 @@ var _audioRetryCount = 0;
 var _audioRetryMax   = 3;
 var _audioRetryTimer = null;
 
+// 新增一个状态标记，防止死循环降级
+var _blobFallbackAttempted = {};
+
 audio.addEventListener('error', function() {
     var err = audio.error;
     if (!err) return;
     try { audio.pause(); } catch(e) {} 
 
-    // 【新增】已知离线就别重试了，重试也是白等
+    var currentSrc = audio.src || '';
+    var isBlob = currentSrc.indexOf('blob:') === 0;
+    var origUrl = _currentTrackOrigUrl || currentSrc;
+
+    // 【离线处理】已知离线就别重试了
     if (navigator.onLine === false) {
         _audioRetryCount = 0;
         clearTimeout(_audioRetryTimer);
@@ -4263,17 +4270,32 @@ audio.addEventListener('error', function() {
         return;
     }
 
+    // 【核心降级逻辑】如果网络正常，且是网络请求报错（尤其是iOS说不支持格式时）
+    // 且还没尝试过Blob降级，并且当前不是Blob链接
+    if (!isBlob && origUrl.indexOf('http') === 0 && !_blobFallbackAttempted[origUrl]) {
+        dbg('audioError:triggerBlobFallback', err.code);
+        showToast('检测到格式异常，正在切换备用通道...');
+        _blobFallbackAttempted[origUrl] = true;
+        _audioRetryCount = 0; // 重置普通重试计数
+        clearTimeout(_audioRetryTimer);
+        
+        // 调用下面的降级强拉函数
+        _fallbackToBlobPlay(origUrl);
+        return;
+    }
+
+    // === 以下为原有的重试和兜底逻辑 ===
     var isRetryable = (
         err.code === MediaError.MEDIA_ERR_NETWORK ||
         err.code === MediaError.MEDIA_ERR_DECODE  ||
         (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED &&
-         audio.src && audio.src.toLowerCase().indexOf('.m4a') > -1)
+         currentSrc && currentSrc.toLowerCase().indexOf('.m4a') > -1)
     );
 
     if (isRetryable && _audioRetryCount < _audioRetryMax) {
         _audioRetryCount++;
         var delay = _audioRetryCount * 1500;
-        var retryUrl = audio.src;
+        var retryUrl = currentSrc;
         showToast('加载失败，' + (_audioRetryCount) + '/' + _audioRetryMax + ' 重试中…');
         clearTimeout(_audioRetryTimer);
         _audioRetryTimer = setTimeout(function() {
@@ -4290,20 +4312,10 @@ audio.addEventListener('error', function() {
     showToast(msg);
     document.getElementById('iconPlay').style.display  = 'block';
     document.getElementById('iconPause').style.display = 'none';
-    
-    if (navigator.onLine === false) {
-        showToast('📶 处于离线状态，已停止加载未缓存音频');
-        audio.pause();
-        document.getElementById('iconPlay').style.display  = 'block';
-        document.getElementById('iconPause').style.display = 'none';
-        return;
-    }
 
     _consecutiveErrors++;
     if (_consecutiveErrors >= playList.length) {
         showToast('⚠️ 当前列表所有音频加载失败，已停止');
-        document.getElementById('iconPlay').style.display  = 'block';
-        document.getElementById('iconPause').style.display = 'none';
         return;
     }
 
@@ -4313,6 +4325,43 @@ audio.addEventListener('error', function() {
         _autoNextTimer = setTimeout(playNext, 2000);
     }
 });
+
+// 【新增】降级强拉函数，直接用 fetch 下载成 Blob 再给 audio 播
+function _fallbackToBlobPlay(url) {
+    // 记录当前播放时间，防止拉取完重新开始
+    var resumeTime = (audio.currentTime > 2) ? audio.currentTime : (progressDB[url] || 0);
+    
+    fetch(url, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
+        .then(function(res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.blob();
+        })
+        .then(function(blob) {
+            // 二次确认：如果在这期间用户切歌了，就丢弃这个请求
+            if (_latestPlayRequestUrl !== url) return;
+            
+            _revokeCurrentObjectUrl(); // 清理上一个 Blob
+            _currentObjectUrl = URL.createObjectURL(blob);
+            
+            audio.src = _currentObjectUrl;
+            audio.playbackRate = playbackRate;
+            
+            if (resumeTime > 2) {
+                try { audio.currentTime = resumeTime; } catch(e) {}
+            }
+            safePlay();
+            updateAudioInfo();
+            _consecutiveErrors = 0; // 播放成功，错误计数清零
+        })
+        .catch(function(err) {
+            console.warn('[Fallback] Blob 强拉失败:', err);
+            showToast('备用通道也失败，即将尝试下一首...');
+            // 如果降级失败，走原有的跳下一首逻辑
+            if (playList && playList.length > 1) {
+                _autoNextTimer = setTimeout(playNext, 2000);
+            }
+        });
+}
 
 function checkFictionRatio() {
     var today = todayKey();
