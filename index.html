@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.4.34</title>
+    <title>英语精听播放器 v2.4.35</title>
     <!-- PWA Meta -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1108,7 +1108,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.4.34</div>
+        <div class="version-tag">Build v2.4.35</div>
     </div>
 </div>
 
@@ -4253,6 +4253,9 @@ var _blobFallbackAttempted = {};
 // 记录已经尝试过降级的链接，防止死循环
 var _blobFallbackAttempted = {};
 
+// 记录已经尝试过重试的链接，防止死循环
+var _blobFallbackAttempted = {};
+
 audio.addEventListener('error', function() {
     var err = audio.error;
     if (!err) return;
@@ -4273,16 +4276,30 @@ audio.addEventListener('error', function() {
         return;
     }
 
-    // 【核心降级拦截】
-    // 如果不是 blob，且是 http 链接，且没降级过，直接触发降级通道
+    // 【核心降级：缓存击穿】
+    // 如果没重试过，且当前不是 blob，尝试给 URL 加时间戳强制刷新
     if (!isBlob && origUrl.indexOf('http') === 0 && !_blobFallbackAttempted[origUrl]) {
-        dbg('audioError:triggerBlobFallback', err.code);
         _blobFallbackAttempted[origUrl] = true;
         _audioRetryCount = 0; 
         clearTimeout(_audioRetryTimer);
         
-        // 开始 XHR 降级强拉
-        _fallbackToBlobPlay(origUrl);
+        var resumeTime = audio.currentTime > 2 ? audio.currentTime : (progressDB[origUrl] || 0);
+        
+        // 弹窗提示触发降级及错误码 (排查用)
+        alert('🚨 播放错误触发降级\n错误码: ' + err.code + '\n正在尝试强制刷新缓存...');
+        
+        // 在 URL 后加随机参数绕过 CDN 坏缓存
+        var freshUrl = origUrl + (origUrl.indexOf('?') > -1 ? '&' : '?') + '_t=' + Date.now();
+        
+        audio.src = freshUrl;
+        audio.playbackRate = playbackRate;
+        
+        if (resumeTime > 2) {
+            try { audio.currentTime = resumeTime; } catch(e) {}
+        }
+        
+        safePlay();
+        updateAudioInfo();
         return;
     }
 
@@ -4308,32 +4325,22 @@ audio.addEventListener('error', function() {
 
     _audioRetryCount = 0;
     var msg = '⚠️ 音频加载失败';
-    if (err.code === MediaError.MEDIA_ERR_NETWORK)           msg = '⚠️ 网络错误，请检查网络连接';
+    if (err.code === MediaError.MEDIA_ERR_NETWORK)           msg = '⚠️ 网络错误';
     if (err.code === MediaError.MEDIA_ERR_DECODE)            msg = '⚠️ 音频解码失败';
-    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = '⚠️ 不支持此音频格式';
-    showToast(msg);
+    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = '⚠️ 不支持此格式';
+    
+    // 彻底失败弹窗，确保你能看到
+    alert('❌ 最终播放失败\n' + msg + '\n即将尝试下一首...');
+
     document.getElementById('iconPlay').style.display  = 'block';
     document.getElementById('iconPause').style.display = 'none';
-    
-    if (navigator.onLine === false) {
-        showToast('📶 处于离线状态，已停止加载未缓存音频');
-        audio.pause();
-        document.getElementById('iconPlay').style.display  = 'block';
-        document.getElementById('iconPause').style.display = 'none';
-        return;
-    }
 
     _consecutiveErrors++;
     if (_consecutiveErrors >= playList.length) {
-        showToast('⚠️ 当前列表所有音频加载失败，已停止');
-        document.getElementById('iconPlay').style.display  = 'block';
-        document.getElementById('iconPause').style.display = 'none';
         return;
     }
 
     if (playList && playList.length > 1) {
-        showToast('即将播放下一首...');
-        clearTimeout(_autoNextTimer);
         _autoNextTimer = setTimeout(playNext, 2000);
     }
 });
