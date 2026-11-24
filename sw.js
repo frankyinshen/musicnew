@@ -1,5 +1,5 @@
-/* 英语精听播放器 Service Worker v2.6.0 */
-var CACHE_NAME = 'player-shell-v2.6.0';
+/* 英语精听播放器 Service Worker v2.7.0 */
+var CACHE_NAME = 'player-shell-v2.7.0';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
@@ -18,10 +18,39 @@ function _swKey(url) {
 // SW 内存缓存：避免同一文件反复 Range 请求时反复读 IDB。
 // 页面删除缓存后会通过 postMessage 通知这里失效，防止“幽灵缓存”返回旧数据。
 // v2.6.0：url 字段统一存解码 key，与页面端 invalidate 消息完全对齐。
-var _swAudioCache = { url: null, buffer: null };
-var _swSubCache = {};      // v2.6.0：字幕文本内存缓存 { 解码key: string }（上限 64 条）
+var _swAudioCache = { url: null, buffer: null, ts: 0 };
+var _swSubCache = {};      // v2.6.0：字幕内存缓存 { 解码key: ArrayBuffer | string(老数据) }（上限 64 条）
 var _swSubCacheKeys = [];
 var _swIDB = null; // 复用 IDB 连接，避免频繁 indexedDB.open
+
+// ===== v2.7.0·P1-3.2 已缓存音频键集合（解码形式）=====
+// 集合就绪后，未缓存的音频请求同步直接放行（不调用 respondWith），
+// 浏览器与 CDN 原生直连 —— 消除 SW 异步 IDB 查询的 IPC 延迟与 iOS SW 流卡顿。
+var _cachedAudioKeySet = {};
+var _audioKeysReady = false;
+var _AUDIO_MEM_MAX = 15 * 1048576;   // 仅缓存 <=15MB 的音频进内存（防长音频撑爆 SW 进程）
+var _AUDIO_MEM_TTL = 60000;          // 60 秒无访问自动释放引用
+
+function _initAudioKeySet() {
+    if (_audioKeysReady) return Promise.resolve();
+    return _openIDB().then(function(db) {
+        if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_STORE)) {
+            _audioKeysReady = true;
+            return;
+        }
+        return new Promise(function(resolve) {
+            try {
+                var req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).getAllKeys();
+                req.onsuccess = function() {
+                    (req.result || []).forEach(function(k) { _cachedAudioKeySet[k] = true; });
+                    _audioKeysReady = true;
+                    resolve();
+                };
+                req.onerror = function() { _audioKeysReady = true; resolve(); };
+            } catch(e) { _audioKeysReady = true; resolve(); }
+        });
+    });
+}
 
 self.addEventListener('install', function(e) {
     e.waitUntil(
@@ -43,6 +72,7 @@ self.addEventListener('activate', function(e) {
                     .map(function(k) { return caches.delete(k); })
             );
         }).then(function() { return self.clients.claim(); })
+         .then(function() { return _initAudioKeySet(); })   // v2.7.0：激活即装载已缓存键集合
     );
 });
 
@@ -50,10 +80,15 @@ self.addEventListener('activate', function(e) {
 self.addEventListener('message', function(e) {
     var msg = e.data || {};
     if (msg.type === 'invalidate-audio' && msg.url) {
+        // v2.7.0：键集合同步移除（否则 SW 会继续拦截一个已删除的缓存去查 IDB）
+        delete _cachedAudioKeySet[_swKey(msg.url)];
         // v2.6.0：双向解码比较，编码/未编码的 msg.url 都能命中
         if (_swAudioCache.url === _swKey(msg.url) || _swAudioCache.url === msg.url) {
-            _swAudioCache = { url: null, buffer: null };
+            _swAudioCache = { url: null, buffer: null, ts: 0 };
         }
+    } else if (msg.type === 'cache-audio-added' && msg.url) {
+        // v2.7.0·P1-3.2：页面端 _idbPut 成功 → 新缓存立即可被拦截（直连→拦截的无缝切换）
+        _cachedAudioKeySet[_swKey(msg.url)] = true;
     } else if (msg.type === 'invalidate-subtitle' && msg.url) {
         var sk = _swKey(msg.url);
         delete _swSubCache[sk];
@@ -65,7 +100,8 @@ self.addEventListener('message', function(e) {
             }
         });
     } else if (msg.type === 'clear-audio-cache') {
-        _swAudioCache = { url: null, buffer: null };
+        _swAudioCache = { url: null, buffer: null, ts: 0 };
+        _cachedAudioKeySet = {};   // v2.7.0：键集合一并清空（全部放行直连）
         _swSubCache = {};
         _swSubCacheKeys = [];
     } else if (msg.type === 'skip-waiting') {
@@ -135,8 +171,14 @@ function _openIDB() {
 
 function getAudioFromIndexedDB(url) {
     var key = _swKey(url);   // v2.6.0：与页面端存储 key 对齐（解码形式）
+    var now = Date.now();
     if (_swAudioCache.url === key && _swAudioCache.buffer) {
+        _swAudioCache.ts = now;                 // v2.7.0：命中续期
         return Promise.resolve(_swAudioCache.buffer);
+    }
+    // v2.7.0：TTL 回收 —— 60 秒无访问的内存缓存直接丢弃，长会话不撑爆 SW 进程
+    if (_swAudioCache.url && now - _swAudioCache.ts > _AUDIO_MEM_TTL) {
+        _swAudioCache = { url: null, buffer: null, ts: 0 };
     }
     return _openIDB().then(function(db) {
         if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_STORE)) return null;
@@ -146,7 +188,12 @@ function getAudioFromIndexedDB(url) {
                 var getReq = tx.objectStore(IDB_STORE).get(key);
                 getReq.onsuccess = function() {
                     var res = getReq.result || null;
-                    if (res) _swAudioCache = { url: key, buffer: res };
+                    if (res) {
+                        // v2.7.0：>15MB 的文件仍从 IDB 正常返回，但不进内存缓存（防 OOM）
+                        if (res.byteLength <= _AUDIO_MEM_MAX) {
+                            _swAudioCache = { url: key, buffer: res, ts: Date.now() };
+                        }
+                    }
                     resolve(res);
                 };
                 getReq.onerror = function() { resolve(null); };
@@ -172,18 +219,24 @@ function getSubtitleText(url) {
     });
 }
 
-function putSubtitleText(url, text) {
+/* 【v2.7.0·P0-1.1】存原始 ArrayBuffer 而非解码文本：
+   此前用 text() 读取响应会按 UTF-8 强制解码，GBK / UTF-16 字幕二次或离线加载时永久乱码。
+   命中返回时统一以 octet-stream 交回原始字节，编码探测交给页面端 _decodeSubBuffer()。 */
+function putSubtitleBuffer(url, buffer) {
     var key = _swKey(url);
-    _swSubCache[key] = text;
-    _swSubCacheKeys.push(key);
-    while (_swSubCacheKeys.length > 64) {
-        delete _swSubCache[_swSubCacheKeys.shift()];
+    _swSubCache[key] = buffer;
+    // v2.7.0·P2-4.4：重复键不再入队（同键多次入队会把其他字幕提前驱逐出 LRU）
+    if (_swSubCacheKeys.indexOf(key) < 0) {
+        _swSubCacheKeys.push(key);
+        while (_swSubCacheKeys.length > 64) {
+            delete _swSubCache[_swSubCacheKeys.shift()];
+        }
     }
     _openIDB().then(function(db) {
         if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_SUB_STORE)) return;
         try {
             var tx = db.transaction(IDB_SUB_STORE, 'readwrite');
-            tx.objectStore(IDB_SUB_STORE).put(text, key);
+            tx.objectStore(IDB_SUB_STORE).put(buffer, key);
         } catch (err) {}
     });
 }
@@ -218,11 +271,13 @@ self.addEventListener('fetch', function(e) {
 
     if (isSubtitle) {
         e.respondWith(
-            getSubtitleText(url).then(function(text) {
-                if (text !== null && text !== undefined && text !== '') {
-                    return new Response(text, {
+            getSubtitleText(url).then(function(cachedVal) {
+                // v2.7.0：命中可能是 ArrayBuffer（新数据）或 string（v2.6.0 老 UTF-8 数据），都直接下发；
+                // Content-Type 用 octet-stream —— 页面端 res.arrayBuffer() + _decodeSubBuffer() 统一探测编码
+                if (cachedVal !== null && cachedVal !== undefined && cachedVal !== '') {
+                    return new Response(cachedVal, {
                         status: 200,
-                        headers: { 'Content-Type': _guessSubMime(url) }
+                        headers: { 'Content-Type': 'application/octet-stream' }
                     });
                 }
                 return fetch(req).then(function(resp) {
@@ -230,8 +285,12 @@ self.addEventListener('fetch', function(e) {
                         var cl = parseInt(resp.headers.get('Content-Length') || '0', 10);
                         // 只缓存小文件（<=512KB），避免误把大资源当字幕
                         if (cl === 0 || cl <= 524288) {
-                            resp.clone().text().then(function(t) {
-                                if (t && t.length <= 524288 && t.length > 0) putSubtitleText(url, t);
+                            // 【v2.7.0·P0-1.1】取原始字节（arrayBuffer）而非文本读取
+                            // （文本读取强制 UTF-8 解码，GBK/UTF-16 字幕写进 IDB 即永久乱码）
+                            resp.clone().arrayBuffer().then(function(buf) {
+                                if (buf && buf.byteLength > 0 && buf.byteLength <= 524288) {
+                                    putSubtitleBuffer(url, buf);
+                                }
                             }).catch(function() {});
                         }
                     }
@@ -245,6 +304,10 @@ self.addEventListener('fetch', function(e) {
     }
 
     if (isAudio) {
+        // 【v2.7.0·P1-3.2】同步放行：集合已就绪且未缓存 → 不调用 respondWith，
+        // 浏览器与 CDN 原生直连（下载/在线播放在 iOS 上显著提速，且绕开 SW 流卡顿）。
+        if (_audioKeysReady && !_cachedAudioKeySet[_swKey(url)]) return;
+        if (!_audioKeysReady) e.waitUntil(_initAudioKeySet());   // 首次请求时后台装载集合
         e.respondWith(
             getAudioFromIndexedDB(url).then(function(buffer) {
                 if (!buffer) {
