@@ -1,17 +1,35 @@
-var CACHE_NAME = 'player-shell-v2.4.32';
+/* 英语精听播放器 Service Worker v2.6.0 */
+var CACHE_NAME = 'player-shell-v2.6.0';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
-var IDB_VERSION = 1;
+var IDB_SUB_STORE = 'subtitles';   // v2.6.0：字幕离线 store
+var IDB_VERSION = 2;               // v2.6.0：1→2，新增 subtitles（旧 audios 数据保留）
 var AUDIO_EXTS = ['.mp3','.wav','.flac','.m4a','.aac','.ogg','.opus'];
+var SUBTITLE_EXTS = ['.lrc','.srt','.ass'];
 
-// SW 内存缓存，防止频繁 Range 请求导致反复读取 IDB 造成内存溢出
+// 统一 IDB key：一律用解码后的 URL。
+// 原因：浏览器发出的请求 req.url 是百分号编码形式，而页面端写入 IDB 用的是未编码 URL，
+// 中文/空格文件名若不统一，SW 查询永远 miss（v2.5.0 及之前的遗留 bug，本轮修复）。
+function _swKey(url) {
+    try { return decodeURIComponent(url); } catch (e) { return url; }
+}
+
+// SW 内存缓存：避免同一文件反复 Range 请求时反复读 IDB。
+// 页面删除缓存后会通过 postMessage 通知这里失效，防止“幽灵缓存”返回旧数据。
+// v2.6.0：url 字段统一存解码 key，与页面端 invalidate 消息完全对齐。
 var _swAudioCache = { url: null, buffer: null };
+var _swSubCache = {};      // v2.6.0：字幕文本内存缓存 { 解码key: string }（上限 64 条）
+var _swSubCacheKeys = [];
+var _swIDB = null; // 复用 IDB 连接，避免频繁 indexedDB.open
 
 self.addEventListener('install', function(e) {
     e.waitUntil(
         caches.open(CACHE_NAME).then(function(cache) {
-            return cache.add(SHELL_URL);
+            // no-cache 确保安装时拿到的是最新壳文件，新版本部署后能及时触达
+            var shellReq = SHELL_URL;
+            try { shellReq = new Request(SHELL_URL, { cache: 'no-cache' }); } catch(err) {}
+            return cache.add(shellReq);
         })
     );
     self.skipWaiting();
@@ -24,18 +42,62 @@ self.addEventListener('activate', function(e) {
                 keys.filter(function(k) { return k !== CACHE_NAME; })
                     .map(function(k) { return caches.delete(k); })
             );
-        })
+        }).then(function() { return self.clients.claim(); })
     );
-    self.clients.claim();
 });
 
+// 页面 → SW 消息：删除缓存后同步失效内存缓存
+self.addEventListener('message', function(e) {
+    var msg = e.data || {};
+    if (msg.type === 'invalidate-audio' && msg.url) {
+        // v2.6.0：双向解码比较，编码/未编码的 msg.url 都能命中
+        if (_swAudioCache.url === _swKey(msg.url) || _swAudioCache.url === msg.url) {
+            _swAudioCache = { url: null, buffer: null };
+        }
+    } else if (msg.type === 'invalidate-subtitle' && msg.url) {
+        var sk = _swKey(msg.url);
+        delete _swSubCache[sk];
+        var ki = _swSubCacheKeys.indexOf(sk);
+        if (ki > -1) _swSubCacheKeys.splice(ki, 1);
+        _openIDB().then(function(db) {
+            if (db && db.objectStoreNames && db.objectStoreNames.contains(IDB_SUB_STORE)) {
+                try { db.transaction(IDB_SUB_STORE, 'readwrite').objectStore(IDB_SUB_STORE).delete(sk); } catch (err) {}
+            }
+        });
+    } else if (msg.type === 'clear-audio-cache') {
+        _swAudioCache = { url: null, buffer: null };
+        _swSubCache = {};
+        _swSubCacheKeys = [];
+    } else if (msg.type === 'skip-waiting') {
+        self.skipWaiting();
+    }
+});
+
+/* 完整的 Range 解析：
+   - 无 Range → 整文件 {0, total-1}
+   - bytes=-500（后缀范围）→ 最后 500 字节
+   - bytes=100-（开放结尾）→ 100 到末尾
+   - start > end 或 start >= total 或非法格式 → invalid（返回 416）
+   - end 超过 total-1 → 截断（iOS 常发超大 end 的探测请求） */
 function parseRange(rangeHeader, totalLength) {
     if (!rangeHeader) return { start: 0, end: totalLength - 1 };
-    var parts = rangeHeader.replace(/bytes=/, "").split("-");
-    var start = parseInt(parts[0], 10);
-    var end = parts[1] ? parseInt(parts[1], 10) : totalLength - 1;
-    if (isNaN(start)) start = 0;
+    var m = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+    if (!m) return { start: 0, end: totalLength - 1 };
+    var startStr = m[1], endStr = m[2];
+
+    // 后缀范围：bytes=-500
+    if (startStr === '' && endStr !== '') {
+        var len = parseInt(endStr, 10);
+        if (isNaN(len) || len <= 0) return { invalid: true };
+        return { start: Math.max(0, totalLength - len), end: totalLength - 1 };
+    }
+
+    var start = parseInt(startStr, 10);
+    var end   = endStr === '' ? totalLength - 1 : parseInt(endStr, 10);
+    if (isNaN(start) || start < 0) return { invalid: true };
     if (isNaN(end)) end = totalLength - 1;
+    if (end > totalLength - 1) end = totalLength - 1; // 截断超大 end
+    if (start > end || start >= totalLength) return { invalid: true };
     return { start: start, end: end };
 }
 
@@ -51,89 +113,184 @@ function _guessMime(url) {
     return 'audio/mpeg';
 }
 
-function getAudioFromIndexedDB(url) {
-    if (_swAudioCache.url === url && _swAudioCache.buffer) {
-        return Promise.resolve(_swAudioCache.buffer);
-    }
+function _openIDB() {
+    if (_swIDB) return Promise.resolve(_swIDB);
     return new Promise(function(resolve) {
-        if (typeof indexedDB === 'undefined' || !indexedDB) {
-            resolve(null); return;
-        }
+        if (typeof indexedDB === 'undefined' || !indexedDB) { resolve(null); return; }
         var req = indexedDB.open(IDB_NAME, IDB_VERSION);
         req.onupgradeneeded = function(e) {
             var db = e.target.result;
             if (!db.objectStoreNames.contains(IDB_STORE)) {
                 db.createObjectStore(IDB_STORE);
             }
-        };
-        req.onerror = function() { resolve(null); };
-        req.onsuccess = function(e) {
-            var db = e.target.result;
-            if (!db.objectStoreNames.contains(IDB_STORE)) {
-                resolve(null); return;
+            // v2.6.0：新增字幕 store（已存在则跳过）
+            if (!db.objectStoreNames.contains(IDB_SUB_STORE)) {
+                db.createObjectStore(IDB_SUB_STORE);
             }
+        };
+        req.onsuccess = function(e) { _swIDB = e.target.result; resolve(_swIDB); };
+        req.onerror = function() { resolve(null); };
+    });
+}
+
+function getAudioFromIndexedDB(url) {
+    var key = _swKey(url);   // v2.6.0：与页面端存储 key 对齐（解码形式）
+    if (_swAudioCache.url === key && _swAudioCache.buffer) {
+        return Promise.resolve(_swAudioCache.buffer);
+    }
+    return _openIDB().then(function(db) {
+        if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_STORE)) return null;
+        return new Promise(function(resolve) {
             try {
                 var tx = db.transaction(IDB_STORE, 'readonly');
-                var getReq = tx.objectStore(IDB_STORE).get(url);
+                var getReq = tx.objectStore(IDB_STORE).get(key);
                 getReq.onsuccess = function() {
                     var res = getReq.result || null;
-                    if (res) {
-                        _swAudioCache = { url: url, buffer: res };
-                    }
+                    if (res) _swAudioCache = { url: key, buffer: res };
                     resolve(res);
                 };
                 getReq.onerror = function() { resolve(null); };
             } catch (err) { resolve(null); }
-        };
+        });
+    });
+}
+
+/* v2.6.0 字幕存取：内存 → IDB → 网络（成功回写 IDB，实现"播过即离线"） */
+function getSubtitleText(url) {
+    var key = _swKey(url);
+    if (_swSubCache[key] !== undefined) return Promise.resolve(_swSubCache[key]);
+    return _openIDB().then(function(db) {
+        if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_SUB_STORE)) return null;
+        return new Promise(function(resolve) {
+            try {
+                var tx = db.transaction(IDB_SUB_STORE, 'readonly');
+                var getReq = tx.objectStore(IDB_SUB_STORE).get(key);
+                getReq.onsuccess = function() { resolve(getReq.result || null); };
+                getReq.onerror = function() { resolve(null); };
+            } catch (err) { resolve(null); }
+        });
+    });
+}
+
+function putSubtitleText(url, text) {
+    var key = _swKey(url);
+    _swSubCache[key] = text;
+    _swSubCacheKeys.push(key);
+    while (_swSubCacheKeys.length > 64) {
+        delete _swSubCache[_swSubCacheKeys.shift()];
+    }
+    _openIDB().then(function(db) {
+        if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_SUB_STORE)) return;
+        try {
+            var tx = db.transaction(IDB_SUB_STORE, 'readwrite');
+            tx.objectStore(IDB_SUB_STORE).put(text, key);
+        } catch (err) {}
+    });
+}
+
+function _guessSubMime(url) {
+    var u = url.toLowerCase().split('?')[0];
+    if (u.slice(-4) === '.lrc') return 'text/plain; charset=utf-8';
+    if (u.slice(-4) === '.srt') return 'text/plain; charset=utf-8';
+    if (u.slice(-4) === '.ass') return 'text/plain; charset=utf-8';
+    return 'text/plain; charset=utf-8';
+}
+
+// 网络兜底：只尝试一次 fetch，离线/失败直接回 504，不再二次请求
+function _netFetch(req) {
+    return fetch(req).catch(function() {
+        return new Response('', { status: 504, statusText: 'Offline' });
     });
 }
 
 self.addEventListener('fetch', function(e) {
     var req = e.request;
     if (req.method !== 'GET') return;
-
     var url = req.url;
+    var urlPath = url.toLowerCase().split('?')[0];
     var isAudio = AUDIO_EXTS.some(function(ext) {
-        return url.toLowerCase().split('?')[0].endsWith(ext);
+        return urlPath.slice(-ext.length) === ext;
     });
+    // v2.6.0：字幕请求 —— IDB 命中直接回文本；未命中走网络，成功则回写 IDB（自动离线化）
+    var isSubtitle = SUBTITLE_EXTS.some(function(ext) {
+        return urlPath.slice(-ext.length) === ext;
+    });
+
+    if (isSubtitle) {
+        e.respondWith(
+            getSubtitleText(url).then(function(text) {
+                if (text !== null && text !== undefined && text !== '') {
+                    return new Response(text, {
+                        status: 200,
+                        headers: { 'Content-Type': _guessSubMime(url) }
+                    });
+                }
+                return fetch(req).then(function(resp) {
+                    if (resp && resp.status === 200) {
+                        var cl = parseInt(resp.headers.get('Content-Length') || '0', 10);
+                        // 只缓存小文件（<=512KB），避免误把大资源当字幕
+                        if (cl === 0 || cl <= 524288) {
+                            resp.clone().text().then(function(t) {
+                                if (t && t.length <= 524288 && t.length > 0) putSubtitleText(url, t);
+                            }).catch(function() {});
+                        }
+                    }
+                    return resp;
+                }).catch(function() {
+                    return new Response('', { status: 504, statusText: 'Offline' });
+                });
+            })
+        );
+        return;
+    }
 
     if (isAudio) {
         e.respondWith(
             getAudioFromIndexedDB(url).then(function(buffer) {
                 if (!buffer) {
-                    _swAudioCache = { url: null, buffer: null };
-                    return fetch(req);
+                    // 未缓存：只走一次网络（离线时 _netFetch 返回 504，页面端有对应提示）
+                    return _netFetch(req);
                 }
-                
+
                 var total = buffer.byteLength;
                 var rangeHeader = req.headers.get('Range');
                 var range = parseRange(rangeHeader, total);
-                
-                // [优化 1] iOS 经常发送超大 end 的探测请求，必须截断而不是报错
-                if (range.start >= total) {
+
+                // 【优化 1】iOS 超大 end 探测请求已被 parseRange 截断；非法范围统一 416
+                if (range.invalid || range.start >= total) {
                     return new Response('', {
                         status: 416,
                         headers: { 'Content-Range': 'bytes */' + total }
                     });
                 }
-                range.end = Math.min(range.end, total - 1);
-                
+
                 var sliced = buffer.slice(range.start, range.end + 1);
                 var mime = _guessMime(url);
-                
+
+                if (rangeHeader) {
+                    return new Response(sliced, {
+                        status: 206,
+                        statusText: 'Partial Content',
+                        headers: {
+                            'Content-Type': mime,
+                            'Content-Length': String(sliced.byteLength),
+                            'Content-Range': 'bytes ' + range.start + '-' + range.end + '/' + total,
+                            'Accept-Ranges': 'bytes'
+                        }
+                    });
+                }
+
+                // 【HTTP 规范修复】200 OK 响应不得携带 Content-Range
                 return new Response(sliced, {
-                    status: rangeHeader ? 206 : 200,
-                    statusText: rangeHeader ? 'Partial Content' : 'OK',
+                    status: 200,
+                    statusText: 'OK',
                     headers: {
                         'Content-Type': mime,
                         'Content-Length': String(sliced.byteLength),
-                        'Content-Range': 'bytes ' + range.start + '-' + range.end + '/' + total,
                         'Accept-Ranges': 'bytes'
                     }
                 });
-            }).catch(function() {
-                return fetch(req);
-            })
+            }).catch(function() { return _netFetch(req); })
         );
         return;
     }
@@ -141,9 +298,9 @@ self.addEventListener('fetch', function(e) {
     if (req.mode === 'navigate') {
         e.respondWith(
             caches.match(SHELL_URL).then(function(cached) {
-                // 后台悄悄拉取最新版本更新缓存，不阻塞本次响应，失败也无所谓
-                var netUpdate = fetch(req).then(function(resp) {
-                    if (resp && resp.ok) {
+                // 后台悄悄拉最新壳文件更新缓存（no-cache 绕过 HTTP 缓存），失败无所谓
+                var netUpdate = fetch(req, { cache: 'no-cache' }).then(function(resp) {
+                    if (resp && resp.status === 200) {
                         var respClone = resp.clone();
                         caches.open(CACHE_NAME).then(function(cache) {
                             cache.put(SHELL_URL, respClone);
@@ -156,7 +313,7 @@ self.addEventListener('fetch', function(e) {
                     e.waitUntil(netUpdate);
                     return cached;
                 }
-                // 缓存里没有壳，只能等网络；网络也没有的话给个兜底页，别让浏览器甩原生离线错误页
+                // 缓存里没有壳，只能等网络；网络也没有给个兜底页
                 return netUpdate.then(function(resp) {
                     return resp || new Response(
                         '<!doctype html><meta charset="utf-8"><body style="font-family:-apple-system,sans-serif;padding:60px 24px;text-align:center;color:#666;">📶 当前离线，且本机暂无可用缓存<br><br>请连接一次网络后重新打开</body>',
@@ -172,21 +329,34 @@ self.addEventListener('fetch', function(e) {
         var urlPath = new URL(req.url).pathname;
         if (urlPath.indexOf('/_api/') === 0 || urlPath === '/sw.js') return;
 
-        var fetchPromise2 = fetch(req).then(function(resp) {
-            if (resp && resp.ok) {
-                var respClone = resp.clone();
-                caches.open(CACHE_NAME).then(function(cache) {
-                    cache.put(req, respClone);
-                });
-            }
-            return resp;
-        });
-        
-        e.waitUntil(fetchPromise2.catch(function(){}));
-
+        // 同源静态资源：缓存优先 + 在线时后台更新（SWR）
         e.respondWith(
             caches.match(req).then(function(cached) {
-                return cached || fetchPromise2;
+                if (cached) {
+                    if (navigator.onLine !== false) {
+                        e.waitUntil(
+                            fetch(req, { cache: 'no-cache' }).then(function(resp) {
+                                // 【修复】只缓存 200；206 等 Partial 响应会让 cache.put 抛错
+                                if (resp && resp.status === 200) {
+                                    var clone = resp.clone();
+                                    return caches.open(CACHE_NAME).then(function(c) { c.put(req, clone); });
+                                }
+                            }).catch(function() {})
+                        );
+                    }
+                    return cached;
+                }
+                // 【修复】离线时不发起注定失败的请求，直接 504
+                if (navigator.onLine === false) {
+                    return new Response('', { status: 504, statusText: 'Offline' });
+                }
+                return fetch(req).then(function(resp) {
+                    if (resp && resp.status === 200) {
+                        var clone2 = resp.clone();
+                        caches.open(CACHE_NAME).then(function(c) { c.put(req, clone2); });
+                    }
+                    return resp;
+                });
             })
         );
     }
