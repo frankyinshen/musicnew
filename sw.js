@@ -1,5 +1,5 @@
-/* 英语精听播放器 Service Worker v2.7.0 */
-var CACHE_NAME = 'player-shell-v2.7.0';
+/* 英语精听播放器 Service Worker v2.8.0 */
+var CACHE_NAME = 'player-shell-v2.8.0';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
@@ -189,8 +189,10 @@ function getAudioFromIndexedDB(url) {
                 getReq.onsuccess = function() {
                     var res = getReq.result || null;
                     if (res) {
+                        // v2.8.0：页面下载改为流式 Blob 落盘，此处兼容 Blob / ArrayBuffer 两种形态
+                        var resSize = res.size || res.byteLength || 0;
                         // v2.7.0：>15MB 的文件仍从 IDB 正常返回，但不进内存缓存（防 OOM）
-                        if (res.byteLength <= _AUDIO_MEM_MAX) {
+                        if (resSize <= _AUDIO_MEM_MAX) {
                             _swAudioCache = { url: key, buffer: res, ts: Date.now() };
                         }
                     }
@@ -315,7 +317,7 @@ self.addEventListener('fetch', function(e) {
                     return _netFetch(req);
                 }
 
-                var total = buffer.byteLength;
+                var total = buffer.size || buffer.byteLength || 0;   // v2.8.0：兼容 Blob 缓存
                 var rangeHeader = req.headers.get('Range');
                 var range = parseRange(rangeHeader, total);
 
@@ -336,7 +338,7 @@ self.addEventListener('fetch', function(e) {
                         statusText: 'Partial Content',
                         headers: {
                             'Content-Type': mime,
-                            'Content-Length': String(sliced.byteLength),
+                            'Content-Length': String(sliced.size || sliced.byteLength),
                             'Content-Range': 'bytes ' + range.start + '-' + range.end + '/' + total,
                             'Accept-Ranges': 'bytes'
                         }
@@ -349,7 +351,7 @@ self.addEventListener('fetch', function(e) {
                     statusText: 'OK',
                     headers: {
                         'Content-Type': mime,
-                        'Content-Length': String(sliced.byteLength),
+                        'Content-Length': String(sliced.size || sliced.byteLength),
                         'Accept-Ranges': 'bytes'
                     }
                 });
