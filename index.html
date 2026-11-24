@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.7.0</title>
+    <title>英语精听播放器 v2.8.0</title>
     <!-- 【v2.7.0】预连接 API 与 CDN 域名（须与下方 APP_CONFIG 保持同步），冷启动不再抢握手 -->
     <link rel="preconnect" href="https://res.evanyin.dpdns.org" crossorigin>
     <link rel="preconnect" href="https://cdn.evanyin.dpdns.org" crossorigin>
@@ -408,7 +408,7 @@
             transition: max-height 0.3s ease, opacity 0.25s ease;
             padding: 0 14px;
         }
-        .sub-bar.show { max-height: 144px; opacity: 1; }   /* v2.7.0：字幕条高度加倍，长句完整显示 */
+        .sub-bar.show { max-height: 216px; opacity: 1; }   /* v2.8.0：字幕条高度再加 50%（144→216px），双语长句完整显示 */
         .sub-bar-inner {
             display: -webkit-flex; display: flex;
             -webkit-align-items: center; align-items: center;
@@ -421,11 +421,16 @@
             color: var(--ios-blue);
         }
         .sub-bar-text {
-            -webkit-flex: 1; flex: 1; font-size: 13px; line-height: 1.35;
+            -webkit-flex: 1; flex: 1; font-size: 15px; line-height: 1.4;   /* v2.8.0：13→15px 尽量大，JS 自动缩回 13px */
             color: var(--ios-text); overflow: hidden;
-            display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;   /* v2.7.0：2→4 行 */
+            max-height: 200px;   /* v2.8.0：配合字幕条 216px，双语四行不裁剪 */
         }
         .sub-bar-text.sub-dim { color: var(--ios-subtext); }
+        .sub-bar-text.scrollable { overflow-y: auto; -webkit-overflow-scrolling: touch; }   /* 仍放不下：区域内上下滑动 */
+        .sub-bar-line { display: block; }
+        .sub-bar-line + .sub-bar-line { margin-top: 2px; }
+        .sub-bar-line.zh { font-size: 0.93em; color: var(--ios-subtext); }   /* 中文副行（英文为精听主体） */
+        .sub-bar-line.dim { opacity: 0.55; }
         .sub-bar-badge {
             font-size: 10px; font-weight: 700; color: #fff; background: var(--ios-blue);
             border-radius: 8px; padding: 2px 6px; margin-left: 8px;
@@ -452,8 +457,10 @@
             font-variant-numeric: tabular-nums; margin-bottom: 1px;
         }
         .sub-line .sl-text {
-            font-size: 15px; line-height: 1.45; color: var(--ios-text);
+            font-size: 16px; line-height: 1.45; color: var(--ios-text);   /* v2.8.0：15→16px 大字 */
         }
+        .sub-line .sl-text .sl-t { display: block; }
+        .sub-line .sl-text .sl-t-zh { font-size: 14px; color: var(--ios-subtext); margin-top: 1px; }   /* 中文副行 */
         .sub-line.active { background: rgba(0,122,255,0.10); }
         .sub-line.active .sl-text { color: var(--ios-blue); font-weight: 600; }
         .sub-line .sl-text.sl-empty { color: var(--ios-subtext); letter-spacing: 2px; }
@@ -1220,7 +1227,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.7.0</div>
+        <div class="version-tag">Build v2.8.0</div>
     </div>
 </div>
 
@@ -1273,6 +1280,7 @@
     <div class="sub-body" id="subBody"></div>
     <div class="sub-foot">
         <button class="sub-foot-btn" id="subLoopFootBtn" onclick="cycleSubLoop()">🔁 单句循环：关</button>
+        <button class="sub-foot-btn" id="subSwitchBtn" onclick="switchSubTrack(1)" style="display:none">🔄 切换字幕</button>
         <button class="sub-foot-btn" onclick="toggleSubBarUI()">隐藏字幕条</button>
     </div>
 </div>
@@ -1395,7 +1403,7 @@ var APP_CONFIG = {
     PROGRAMME_EPOCH: '2026-03-09',                      // 开营日期（周数计算基准）
     SEEK_STEPS:      [3, 5, 10, 15],                    // 精听快退/快进步长（长按切换）
     SHADOW_PAUSES:   [0, 1, 2, 3, 5],                   // 跟读停顿秒数（0=关闭）
-    VERSION:         'v2.7.0'
+    VERSION:         'v2.8.0'
 };
 var API_ROOT = APP_CONFIG.API_ROOT;
 var SITE_ROOT = APP_CONFIG.SITE_ROOT;
@@ -1432,7 +1440,7 @@ var _abShadowWaiting   = false;
 var bookmarksDB        = {};    // 难点书签：{ trackUrl: [秒, ...] }
 try { bookmarksDB = JSON.parse(localStorage.getItem('ab_bookmarks_v1') || '{}'); } catch(e) {}
 // ===== v2.6.0 字幕系统状态 =====
-var browseSubtitleMap  = {};    // 当前目录字幕索引：{ 文件名去扩展名(含小写副本): 字幕url }
+var browseSubtitleMap  = {};    // 当前目录字幕索引：{ 文件名去扩展名(含小写副本): [{url,ext},...] }（v2.8.0 数组化，同名多字幕共存）
 var _subTextCache      = {};    // 内存缓存：{ 字幕url: {fmt, cues} }，会话级
 var _trackSub          = null;  // 当前曲目字幕 { url, fmt, cues:[{start,end,text}] }
 var _subActiveIdx      = -1;    // 当前句索引
@@ -1440,6 +1448,10 @@ var _subBarState       = 'idle';// idle=未播放 | none=无字幕 | loading | o
 var _subEnabled        = true;  // 字幕总开关（关闭后不再探测）
 try { _subEnabled = localStorage.getItem('subtitles_on_v1') !== '0'; } catch(e) {}
 var _subLoopMax        = 0;     // 单句循环遍数：0=关 1/2/3/5=固定遍数 -1=无限
+var _trackSubCandidates = [];   // v2.8.0：当前曲目全部可用字幕 URL（多字幕切换用）
+var _trackSubIdx       = -1;    // v2.8.0：当前字幕在候选中的下标
+var _dlProgress        = {};    // v2.8.0：单文件下载进度 { url: 0~1 }
+var _dlBadgeTs         = {};    // v2.8.0：进度 badge 节流刷新时间戳
 try { var _slInit = parseInt(localStorage.getItem('sub_loop_v1') || '0', 10); if (_slInit === -1 || _slInit > 0) _subLoopMax = _slInit; } catch(e) {}
 var _subLoopCount      = 0;     // 当前句已播遍数
 var _subShadowWaiting  = false; // 单句循环跟读停顿中
@@ -1624,7 +1636,7 @@ function _quickRestoreUI() {
 
     // 同样，恢复时判断缓存，用 Blob 绕过网络层
     _idbGet(ps.trackUrl, function(buffer) {
-        if (buffer && buffer.byteLength > 0) {
+        if (buffer && (buffer.size || buffer.byteLength) > 0) {   // v2.8.0：兼容 Blob 缓存
             var blob = new Blob([buffer], { type: _guessMime(ps.trackUrl) });
             _currentObjectUrl = URL.createObjectURL(blob);
             doRestorePlay(_currentObjectUrl);
@@ -2186,13 +2198,26 @@ function _parseLRC(text) {
         var off = offsetMs / 1000;
         for (var j = 0; j < cues.length; j++) cues[j].start -= off;
     }
+    // 【v2.8.0·双语】相同时间标签的多行（英/中各一行）合并为一个 cue：
+    // 一个 cue 的 lines 含中英两行，字幕条与面板均"一行英文、一行中文"分行显示
+    var merged = [];
+    for (var mi = 0; mi < cues.length; mi++) {
+        var mc = cues[mi];
+        var lastM = merged[merged.length - 1];
+        if (lastM && Math.abs(lastM.start - mc.start) < 0.03 && lastM.text !== mc.text) {
+            lastM.text += '\n' + mc.text;
+        } else {
+            merged.push({ start: mc.start, end: -1, text: mc.text });
+        }
+    }
+    cues = merged;
     // 无结束时间：end = 下一句 start；末句给 5 秒
     for (var n = 0; n < cues.length; n++) {
         cues[n].end = (n + 1 < cues.length) ? cues[n + 1].start : cues[n].start + 5;
         if (cues[n].end <= cues[n].start) cues[n].end = cues[n].start + 0.5;
     }
     if (cues[0].start > 0 && cues[0].start < 0.25) cues[0].start = 0;
-    return { fmt: 'lrc', cues: cues };
+    return { fmt: 'lrc', cues: _postProcessCues(cues) };
 }
 
 // ---- SRT 解析：序号行(可省) + 时间行 + 多行文本 ----
@@ -2219,11 +2244,11 @@ function _parseSRT(text) {
         }
         if (!txtLines.length) continue;
         if (end <= start) end = start + 1;
-        cues.push({ start: start, end: end, text: txtLines.join(' ') });
+        cues.push({ start: start, end: end, text: txtLines.join('\n') });   // v2.8.0：保留多行（双语 cue 逐行渲染）
     }
     if (!cues.length) return null;
     cues.sort(function(a, b) { return a.start - b.start; });
-    return { fmt: 'srt', cues: cues };
+    return { fmt: 'srt', cues: _postProcessCues(cues) };
 }
 
 // ---- ASS/SSA 解析：[Events] 段 Format 行定义字段序，Dialogue 行取文本 ----
@@ -2261,15 +2286,55 @@ function _parseASS(text) {
         if (!sm || !em) continue;
         var start = (+sm[1]) * 3600 + (+sm[2]) * 60 + (+sm[3]) + (+sm[4]) / (sm[4].length === 1 ? 10 : 100);
         var end   = (+em[1]) * 3600 + (+em[2]) * 60 + (+em[3]) + (+em[4]) / (em[4].length === 1 ? 10 : 100);
-        // 剥特效标签 {\...}，\N \n 转空格
-        txt = txt.replace(/\{[^}]*\}/g, '').replace(/\\[Nn]/g, ' ').replace(/\s+/g, ' ').trim();
-        if (!txt) continue;
+        // 剥特效标签 {\...}；\N 保留为换行（v2.8.0：双语逐行渲染），空白清洗交给 _postProcessCues
+        txt = txt.replace(/\{[^}]*\}/g, '').replace(/\\[Nn]/g, '\n');
+        if (!txt.replace(/\s/g, '')) continue;
         if (end <= start) end = start + 1;
         cues.push({ start: start, end: end, text: txt });
     }
     if (!cues.length) return null;
     cues.sort(function(a, b) { return a.start - b.start; });
-    return { fmt: 'ass', cues: cues };
+    return { fmt: 'ass', cues: _postProcessCues(cues) };
+}
+
+// ===== v2.8.0 双语字幕支持 =====
+// 判断一行是否中文行（含汉字即视为中文）
+function _isZhLine(s) {
+    return /[\u4e00-\u9fff\u3400-\u4dbf]/.test(String(s || ''));
+}
+// 单行内中英分隔拆分：仅当分隔符两侧一侧含中文、另一侧不含时才拆（防误拆英文句内 " / "）
+function _splitBilingualLine(s) {
+    var m = /^(.+?)\s*(?:\/|／|\||｜|——)\s*(.+)$/.exec(String(s));
+    if (m) {
+        var aZh = _isZhLine(m[1]), bZh = _isZhLine(m[2]);
+        if (aZh !== bZh) return [m[1].trim(), m[2].trim()];
+    }
+    return [s];
+}
+// 行序统一：非中文行在上（英文为精听主体），中文行在下
+function _orderCueLines(lines) {
+    var main = [], zh = [];
+    for (var i = 0; i < lines.length; i++) {
+        if (_isZhLine(lines[i])) zh.push(lines[i]); else main.push(lines[i]);
+    }
+    return main.concat(zh);
+}
+// cue 统一后处理：text 按 \n 拆行 → 逐行清洗 → 单行中英分隔再拆 → 行序 → 生成 cue.lines
+function _postProcessCues(cues) {
+    for (var i = 0; i < cues.length; i++) {
+        var raws = String(cues[i].text || '').split(/\n/);
+        var lines = [];
+        for (var k = 0; k < raws.length; k++) {
+            var r = raws[k].replace(/\s+/g, ' ').trim();
+            if (!r) continue;
+            var sp = _splitBilingualLine(r);
+            for (var j = 0; j < sp.length; j++) lines.push(sp[j]);
+        }
+        cues[i].lines = _orderCueLines(lines);
+        cues[i].text  = lines.join('\n');
+        if (!cues[i].lines.length) { cues[i].lines = ['· · ·']; cues[i].text = '· · ·'; }
+    }
+    return cues;
 }
 
 // ---- 格式自动识别 ----
@@ -2294,8 +2359,12 @@ function _subtitleCandidates(trackUrl, trackName) {
         catch(e) { base = (trackUrl.split('/').pop() || '').replace(/\.[^.]+$/, ''); }
     }
     if (base) {
-        var known = browseSubtitleMap[base] || browseSubtitleMap[base.toLowerCase()];
-        if (known && cands.indexOf(known) < 0) cands.push(known);
+        // v2.8.0：目录索引可能是多字幕数组（含 .zh / .en 等语言后缀变体），
+        // 与 parseDirectoryJSON 同源同序（无后缀优先，lrc > srt > ass），全部收进候选（去重），猜词探测殿后
+        var knownList = _matchSubUrlsForBase(base);
+        for (var q = 0; q < knownList.length; q++) {
+            if (cands.indexOf(knownList[q]) < 0) cands.push(knownList[q]);
+        }
         for (var i = 0; i < SUBTITLE_EXTS.length; i++) {
             var u = dirUrl + base + '.' + SUBTITLE_EXTS[i];
             if (cands.indexOf(u) < 0) cands.push(u);
@@ -2318,6 +2387,9 @@ function _loadSubtitleForTrack(trackUrl, trackName, forceProbe) {
     _trackSub = null;
     _subActiveIdx = -1;
     _subLoopCount = 0;
+    _trackSubCandidates = [];   // v2.8.0：切歌清空候选（下方按目录索引重新收集）
+    _trackSubIdx = -1;
+    _updateSubSwitchUI();
     _clearSubShadowTimer();   // 【v2.7.0·P2-4.1】切歌清掉待执行的跟读停顿
     if (!_subEnabled) {
         _subBarState = 'off';
@@ -2331,15 +2403,19 @@ function _loadSubtitleForTrack(trackUrl, trackName, forceProbe) {
     var cands;
     var it = _findTrackItemByUrl(trackUrl);
     if (!forceProbe && it && it.dirIndexed) {
-        if (!it.subUrl) {
+        // v2.8.0：目录索引的多个同名字幕全部进候选（默认取优先级最高的 1 个，面板内可随时切换）
+        var subList = (it.subUrls && it.subUrls.length) ? it.subUrls : (it.subUrl ? [it.subUrl] : []);
+        if (!subList.length) {
             _subBarState = 'none';
             _renderSubBarText();
             return;
         }
-        cands = [it.subUrl];
+        cands = subList.slice();
     } else {
         cands = _subtitleCandidates(trackUrl, trackName);
     }
+    _trackSubCandidates = cands.slice();   // v2.8.0：记录全部候选（切换字幕用）
+    _trackSubIdx = -1;
     // 内存缓存快速路径：上一首播过的字幕直接复用
     for (var i = 0; i < cands.length; i++) {
         if (_subTextCache[cands[i]]) {
@@ -2391,15 +2467,64 @@ function _applySubtitle(url, parsed) {
     _subBarState = 'ok';
     _subActiveIdx = -1;
     _subLoopCount = 0;
+    _trackSubIdx = _trackSubCandidates.indexOf(url);   // v2.8.0：记录当前字幕下标
     _renderSubBarText();
     var tt = document.getElementById('subTrackTitle');
     if (tt) {
         var nm = '';
         try { nm = decodeURIComponent(_trackSub.url.split('/').pop() || ''); } catch(e) { nm = _trackSub.url.split('/').pop() || ''; }
-        tt.textContent = nm + ' · ' + parsed.cues.length + ' 句';
+        var multi = _trackSubCandidates.length > 1 ? ('（' + (_trackSubIdx + 1) + '/' + _trackSubCandidates.length + '）') : '';
+        tt.textContent = nm + ' · ' + parsed.cues.length + ' 句' + multi;
     }
+    _updateSubSwitchUI();
     if (_isSubSheetOpen()) _renderSubSheetList();
     _updateSubTimeline(true);
+}
+
+// v2.8.0：字幕面板"切换字幕"按钮（多候选时才显示）
+function _updateSubSwitchUI() {
+    var b = document.getElementById('subSwitchBtn');
+    if (!b) return;
+    if (_trackSubCandidates.length > 1 && _subBarState === 'ok') {
+        b.style.display = '';
+        b.textContent = '🔄 字幕 ' + (_trackSubIdx + 1) + '/' + _trackSubCandidates.length;
+    } else {
+        b.style.display = 'none';
+    }
+}
+
+// v2.8.0：切换到当前曲目的其他字幕文件（循环切换；内存缓存命中秒切，未缓存才走网络）
+function switchSubTrack(delta) {
+    if (!_trackSubCandidates.length) return;
+    if (_trackSubCandidates.length < 2) { showToast('该曲目只找到 1 个字幕文件'); return; }
+    var ni = ((_trackSubIdx < 0 ? 0 : _trackSubIdx) + (delta || 1) + _trackSubCandidates.length) % _trackSubCandidates.length;
+    var url = _trackSubCandidates[ni];
+    var nm = '';
+    try { nm = decodeURIComponent(url.split('/').pop() || ''); } catch(e) { nm = url.split('/').pop() || ''; }
+    var cached = _subTextCache[url];
+    if (cached) {
+        _applySubtitle(url, cached);
+        showToast('已切换：' + nm);
+        return;
+    }
+    _subBarState = 'loading';
+    _renderSubBarText();
+    fetch(_toNetworkUrl(url), { mode: 'cors', credentials: 'omit' })
+        .then(function(res) {
+            if (!res.ok) return Promise.reject(new Error('HTTP ' + res.status));
+            return res.arrayBuffer();
+        })
+        .then(function(buf) {
+            var parsed = _parseSubtitle(_decodeSubBuffer(buf));
+            if (!parsed || !parsed.cues.length) return Promise.reject(new Error('parse fail'));
+            _subTextCache[url] = parsed;
+            _applySubtitle(url, parsed);
+            showToast('已切换：' + nm);
+        })
+        .catch(function() {
+            if (_trackSub) { _subBarState = 'ok'; _renderSubBarText(); }
+            showToast('该字幕加载失败：' + nm);
+        });
 }
 
 // ---- 字幕大小记账（进 idb_size_map_v1，空间管理/删除联动用） ----
@@ -2413,12 +2538,12 @@ function _noteSubSize(url, bytes) {
 // ---- 音频离线缓存成功后：静默预取同名字幕（SW 会存入 IDB，离线可用） ----
 function _prefetchSubtitle(audioUrl) {
     if (!_subEnabled) return;
-    // 【v2.7.0·P1-3.1】目录索引可靠：无字幕 0 请求；有字幕只取确定存在的那 1 个
+    // 【v2.8.0】目录索引的多个同名字幕全部预取（字幕都是小文件，离线后切换字幕也有数据）
     var it = _findTrackItemByUrl(audioUrl);
     var cands;
     if (it && it.dirIndexed) {
-        if (!it.subUrl) return;
-        cands = [it.subUrl];
+        if (!it.subUrls || !it.subUrls.length) return;
+        cands = it.subUrls.slice();
     } else {
         cands = _subtitleCandidates(audioUrl, '');
     }
@@ -2503,18 +2628,29 @@ function _renderSubBarText() {
     }
     bar.className = 'sub-bar show';
     if (_subBarState === 'loading') {
+        el.style.fontSize = '';
         el.textContent = '字幕探测中…';
         el.className = 'sub-bar-text sub-dim';
     } else if (_subBarState === 'none') {
+        el.style.fontSize = '';
         el.textContent = '未找到字幕（点击重试）';
         el.className = 'sub-bar-text sub-dim';
     } else if (_subBarState === 'ok' && _trackSub) {
         if (_subActiveIdx >= 0 && _trackSub.cues[_subActiveIdx]) {
             var cue = _trackSub.cues[_subActiveIdx];
             var inCue = (audio.currentTime || 0) >= cue.start && (audio.currentTime || 0) < cue.end;
-            var txt = cue.text || '· · ·';
-            el.textContent = txt;
-            el.className = 'sub-bar-text' + (inCue ? '' : ' sub-dim');
+            // v2.8.0：双语逐行渲染（英文一行在上、中文一行在下），字号尽量大，放不下自动缩，仍放不下可滑动
+            var lines = (cue.lines && cue.lines.length) ? cue.lines : [(cue.text || '· · ·')];
+            el.className = 'sub-bar-text';
+            el.style.fontSize = '';
+            el.innerHTML = '';
+            for (var li = 0; li < lines.length; li++) {
+                var d = document.createElement('div');
+                d.className = 'sub-bar-line' + (_isZhLine(lines[li]) ? ' zh' : '') + (inCue ? '' : ' dim');
+                d.textContent = lines[li];
+                el.appendChild(d);
+            }
+            _fitSubBarText(el);
         } else {
             el.textContent = '♪';
             el.className = 'sub-bar-text sub-dim';
@@ -2522,6 +2658,20 @@ function _renderSubBarText() {
     }
     _updateSubBarBadge();
     _updateSubToggleLabel();
+}
+
+// v2.8.0：字幕条自适应字号 —— 15px 起，溢出则每次 -1px 直到 13px（原字号）；
+// 仍放不下不再截断，改为区域内上下滑动查看
+function _fitSubBarText(el) {
+    el.classList.remove('scrollable');
+    var fs = 15;
+    el.style.fontSize = fs + 'px';
+    var guard = 0;
+    while (fs > 13 && el.scrollHeight > el.clientHeight + 1 && guard++ < 4) {
+        fs--;
+        el.style.fontSize = fs + 'px';
+    }
+    if (el.scrollHeight > el.clientHeight + 1) el.classList.add('scrollable');
 }
 
 function _updateSubBarBadge() {
@@ -2656,7 +2806,17 @@ function _renderSubSheetList() {
             tm.textContent = fmtTime(cue.start);
             var tx = document.createElement('div');
             tx.className = 'sl-text' + (cue.text ? '' : ' sl-empty');
-            tx.textContent = cue.text || '· · ·';
+            // v2.8.0：双语逐行渲染（英文主行 / 中文副行）
+            if (cue.lines && cue.lines.length) {
+                for (var li = 0; li < cue.lines.length; li++) {
+                    var ld = document.createElement('div');
+                    ld.className = 'sl-t' + (_isZhLine(cue.lines[li]) ? ' sl-t-zh' : '');
+                    ld.textContent = cue.lines[li];
+                    tx.appendChild(ld);
+                }
+            } else {
+                tx.textContent = cue.text || '· · ·';
+            }
             div.appendChild(tm);
             div.appendChild(tx);
             div.onclick = function() {
@@ -2973,7 +3133,7 @@ function playTrack(index) {
     // 强制走 IDB -> Blob -> ObjectURL，绕过 iOS 后台网络死锁 Bug
     if (_cacheStatus[track.url] === 'cached') {
         _idbGet(track.url, function(buffer) {
-            if (buffer && buffer.byteLength > 0) {
+            if (buffer && (buffer.size || buffer.byteLength) > 0) {   // v2.8.0：兼容 Blob 缓存
                 var blob = new Blob([buffer], { type: _guessMime(track.url) });
                 _currentObjectUrl = URL.createObjectURL(blob);
                 doPlay(_currentObjectUrl);
@@ -3995,6 +4155,57 @@ function _prependOfflineNotice(text) {
     container.insertBefore(notice, container.firstChild);
 }
 
+// ===== v2.8.0 多字幕索引 =====
+// browseSubtitleMap: { base: [ {url, ext}, ... ] } —— 同名多字幕共存
+// （v2.7.0 及之前是单值映射，xxx.lrc / xxx.srt / xxx.ass 同名时互相覆盖，实际选中"目录里最后一个"，不可控）
+function _pushSubIndex(base, url, ext) {
+    if (!base) return;
+    var arr = browseSubtitleMap[base];
+    if (!arr) arr = browseSubtitleMap[base] = [];
+    for (var i = 0; i < arr.length; i++) {
+        if (arr[i].url === url) return;
+    }
+    arr.push({ url: url, ext: ext });
+}
+function _subExtPrio(ext) {
+    return ext === 'lrc' ? 0 : (ext === 'srt' ? 1 : (ext === 'ass' ? 2 : 3));
+}
+var _SUB_LANG_SUFFIXES = ['zh', 'chs', 'cht', 'cn', 'en', 'eng', 'zh-cn', 'zhcn', 'zh_cn', 'zh-en',
+                          'zhen', 'zh_en', 'cn-en', 'en-cn', 'en-zh', 'enzh', 'en_zh', 'bilingual', '双语', '中英', '英中', '中英双语'];
+// 音频 base → 全部匹配字幕 URL（按优先级排序）：
+//   ① 文件名与音频完全同名（无语言后缀）优先；② 组内 .lrc > .srt > .ass；③ 文件名短者优先
+function _matchSubUrlsForBase(aBase) {
+    if (!aBase) return [];
+    var low = String(aBase).toLowerCase();
+    var exact = [], variant = [];
+    for (var key in browseSubtitleMap) {
+        var arr = browseSubtitleMap[key];
+        if (!arr || !arr.length) continue;
+        if (key === aBase) { exact = exact.concat(arr); continue; }
+        var kl = String(key).toLowerCase();
+        if (kl === low) { exact = exact.concat(arr); continue; }
+        for (var li = 0; li < _SUB_LANG_SUFFIXES.length; li++) {
+            var suf = _SUB_LANG_SUFFIXES[li];
+            if (kl === low + '.' + suf || kl === low + '_' + suf || kl === low + '-' + suf || kl === low + ' ' + suf) {
+                variant = variant.concat(arr);
+                break;
+            }
+        }
+    }
+    var byPrio = function(a, b) {
+        var d = _subExtPrio(a.ext) - _subExtPrio(b.ext);
+        if (d) return d;
+        return a.url.length - b.url.length;
+    };
+    exact.sort(byPrio); variant.sort(byPrio);
+    var all = exact.concat(variant);
+    var out = [], seen = {};
+    for (var k = 0; k < all.length; k++) {
+        if (!seen[all[k].url]) { seen[all[k].url] = 1; out.push(all[k].url); }
+    }
+    return out;
+}
+
 function parseDirectoryJSON(data, prefix) {
     // 【修复A1】浏览目录不再覆盖正在播放的队列 playList / currentTrackIndex，
     // 只填充 fileList（展示用）与 browseAudioList（点击播放时再接入队列）
@@ -4010,20 +4221,23 @@ function parseDirectoryJSON(data, prefix) {
         fileList.push({ name: f.name, url: fullUrl, isFolder: true, isAudio: false });
     }
 
-    // 【v2.7.0·P1-3.1】第一遍：先完整收集字幕索引（字幕文件在 files 里的位置可能在音频之后，
-    // 单遍扫描会漏配，必须两遍）
+    // 【v2.8.0】第一遍：先完整收集字幕索引（两遍扫描防漏配）。
+    //   同名多字幕（xxx.lrc / xxx.srt / xxx.zh.lrc）全部收进数组不再互相覆盖，
+    //   "3 个字幕选哪个"由默认优先级决定，且可在字幕面板手动切换
     for (var s = 0; s < files.length; s++) {
         var sf = files[s];
         if (/^.+\.(lrc|srt|ass)$/i.test(sf.name || '')) {
             var subUrl = SITE_ROOT.replace(/\/$/, '') + '/' + _safeDecodePath(sf.key || '').replace(/^\//, '');
+            var subExt = ((sf.name || '').split('.').pop() || '').toLowerCase();
             var subBase = (sf.name || '').replace(/\.[^.]+$/, '');
-            browseSubtitleMap[subBase] = subUrl;
-            browseSubtitleMap[subBase.toLowerCase()] = subUrl;
+            _pushSubIndex(subBase, subUrl, subExt);
+            _pushSubIndex(subBase.toLowerCase(), subUrl, subExt);
         }
     }
 
     // 第二遍：构建音频对象并直接挂上同名字幕引用：
-    //   subUrl = 确定存在的字幕 URL 或 null（目录索引可靠）
+    //   subUrls = 排好优先级的字幕 URL 数组（可能为空）
+    //   subUrl  = 默认首选（兼容 v2.7.0 字段）
     //   dirIndexed = true（播放/预取据此实现 0 次 404 盲探）
     for (var j = 0; j < files.length; j++) {
         var fi = files[j];
@@ -4032,8 +4246,9 @@ function parseDirectoryJSON(data, prefix) {
         if (!isAudio) continue;
         var fileUrl = SITE_ROOT.replace(/\/$/, '') + '/' + _safeDecodePath(fi.key || '').replace(/^\//, '');
         var aBase = (fi.name || '').replace(/\.[^.]+$/, '');
-        var subRef = browseSubtitleMap[aBase] || browseSubtitleMap[aBase.toLowerCase()] || null;
-        var item = { name: fi.name, url: fileUrl, isFolder: false, isAudio: true, subUrl: subRef, dirIndexed: true };
+        var subUrls = _matchSubUrlsForBase(aBase);
+        var item = { name: fi.name, url: fileUrl, isFolder: false, isAudio: true,
+                     subUrl: subUrls[0] || null, subUrls: subUrls, dirIndexed: true };
         fileList.push(item);
         browseAudioList.push(item);
     }
@@ -6186,7 +6401,7 @@ function _idbPut(url, buffer, cb) {
             var st  = tx.objectStore(IDB_STORE);
             var req = st.put(buffer, url);
             req.onsuccess = function() {
-                _idbSizeMap[url] = buffer.byteLength;
+                _idbSizeMap[url] = buffer.byteLength || buffer.size || 0;   // v2.8.0：兼容 Blob 存储
                 _scheduleSizeMapSave();          // 【v2.7.0】防抖落盘
                 _notifySWAudioAdded(url);        // 【v2.7.0·P1-3.2】通知 SW：新缓存可拦截
                 cb && cb(true);
@@ -6355,58 +6570,88 @@ function _guessMime(url) {
     return 'audio/mpeg';
 }
 
-// 【v2.7.0·P1-3.3】单文件下载引擎：
-//   · AbortController 超时（首包 15s；>15MB 文件按 200KB/s 下限动态放宽，上限 5 分钟）
-//   · 超时/网络错误/5xx 自动重试 2 次（退避 800ms / 1600ms）
-//   · 网络请求走 _toNetworkUrl，特殊字符文件名不再 404
-function _downloadOne(url, onProgress, onDone) {
+// 【v2.8.0】单文件下载引擎（v2.7.0"总是下载失败"的根因修复）：
+//   · 旧版 15s 定时器覆盖整个 body 下载（响应头到达后未清除），3 路并发分带宽后必然超时误杀
+//     → 改为空闲看门狗：首包 20s；每收到一块数据续期 20s；总时长上限 15 分钟。下载再慢只要
+//       数据在流动就不会被掐断，只有真正断流 20s 才中止重试
+//   · 旧版 res.arrayBuffer() 一次性把整个文件读进内存（实测用户目录有 81MB 大文件，
+//     3 个并发 = 240MB+ 峰值，iOS 直接杀进程）→ 改为 res.body.getReader() 流式逐块读取，
+//     完成后组装 Blob 落盘（Safari 对大 Blob 自动换页到磁盘，内存安全）；无流式 API 的老浏览器回退 arrayBuffer
+//   · onProgress(p) 单文件实时百分比（badge 显示）；onMeta(len) 响应头大小回调（调度器动态登记大文件互斥）
+function _downloadOne(url, onProgress, onDone, onMeta) {
     var attempt = 0;
     var MAX_RETRY = 2;
-    var ctl = null;
+    var IDLE_MS  = 20000;               // 空闲看门狗：20s 无数据才中止
+    var TOTAL_MS = 15 * 60 * 1000;      // 总时长上限：15 分钟（防僵尸任务）
+    var ctl = null, idleTimer = null, t0 = 0;
+
+    function kill() { if (ctl) { try { ctl.abort(); } catch(e) {} } }
+    function feed() {
+        clearTimeout(idleTimer);
+        if (Date.now() - t0 > TOTAL_MS) { kill(); return; }
+        idleTimer = setTimeout(kill, IDLE_MS);
+    }
 
     var run = function() {
         ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         _cacheStatus[url] = 'caching';
+        _dlProgress[url] = 0;
         _refreshBadge(url);
-
-        var timer = setTimeout(function() {
-            if (ctl) { try { ctl.abort(); } catch(e) {} }
-        }, 15000);
+        t0 = Date.now();
+        idleTimer = setTimeout(kill, IDLE_MS);   // 首包看门狗
 
         fetch(_toNetworkUrl(url), (ctl ? { signal: ctl.signal, mode: 'cors', credentials: 'omit' }
                                        : { mode: 'cors', credentials: 'omit' }))
             .then(function(res) {
                 if (!res.ok) {
-                    clearTimeout(timer);
                     var httpErr = new Error('HTTP ' + res.status);
                     httpErr.status = res.status;
                     throw httpErr;
                 }
-                // 【升级】大文件：按 200KB/s 下限动态放宽总超时（30s ~ 5min），防误杀慢网大文件
                 var len = parseInt(res.headers.get('Content-Length') || '0', 10);
-                if (len > 15 * 1048576) {
-                    clearTimeout(timer);
-                    var bigTmo = Math.min(300000, Math.max(30000, len / (200 * 1024) * 1000));
-                    timer = setTimeout(function() { if (ctl) { try { ctl.abort(); } catch(e) {} } }, bigTmo);
+                if (len > 0) {
+                    _fileSizeCache[url] = len;   // 响应头一到就登记大小（大文件互斥判断提前生效）
+                    if (onMeta) onMeta(len);
                 }
-                return res.arrayBuffer().then(function(buffer) {
-                    clearTimeout(timer);
-                    return buffer;
-                }, function(err) { clearTimeout(timer); throw err; });
+                if (res.body && typeof res.body.getReader === 'function') {
+                    // 流式：逐块读取（内存友好 + 真实进度）
+                    var reader = res.body.getReader();
+                    var chunks = [], received = 0;
+                    var pump = function() {
+                        return reader.read().then(function(r) {
+                            if (r.done) return null;
+                            feed();                       // 数据活跃 → 看门狗续期
+                            chunks.push(r.value);
+                            received += r.value.byteLength;
+                            if (onProgress) onProgress(len > 0 ? received / len : 0, received);
+                            return pump();
+                        });
+                    };
+                    return pump().then(function() {
+                        clearTimeout(idleTimer);
+                        return new Blob(chunks, { type: _guessMime(url) });
+                    });
+                }
+                // 回退：无流式 body 的老浏览器，总超时按 200KB/s 下限放宽（60s ~ 15min）
+                clearTimeout(idleTimer);
+                var tmo = len > 0 ? Math.min(TOTAL_MS, Math.max(60000, len / (200 * 1024) * 1000)) : 300000;
+                idleTimer = setTimeout(kill, tmo);
+                return res.arrayBuffer();
             })
-            .then(function(buffer) {
-                if (buffer && buffer.byteLength > 0) {
-                    _fileSizeCache[url] = buffer.byteLength;
-                }
-                _idbPut(url, buffer, function(ok) {
+            .then(function(data) {
+                clearTimeout(idleTimer);
+                var size = data ? (data.size || data.byteLength || 0) : 0;
+                if (size > 0) _fileSizeCache[url] = size;
+                _idbPut(url, data, function(ok) {
                     _cacheStatus[url] = ok ? 'cached' : 'error';
+                    if (ok) { _dlProgress[url] = 1; } else { delete _dlProgress[url]; }
                     _refreshBadge(url);
                     if (ok) _prefetchSubtitle(url);   // v2.6.0：离线缓存自动带上同名字幕（静默失败）
                     onDone(ok);
                 });
             })
             .catch(function(err) {
-                clearTimeout(timer);
+                clearTimeout(idleTimer);
                 var status = err && err.status;
                 var retryable = (err && err.name === 'AbortError') || !status || status >= 500;
                 if (attempt < MAX_RETRY && retryable) {
@@ -6415,7 +6660,7 @@ function _downloadOne(url, onProgress, onDone) {
                     return;
                 }
                 var errMsg = '';
-                if (err && err.name === 'AbortError') { errMsg = '下载超时'; }
+                if (err && err.name === 'AbortError') { errMsg = '网络中断或超时'; }
                 else if (status) { errMsg = 'HTTP ' + status; }
                 else if (err && err.message) { errMsg = err.message; }
                 else { errMsg = String(err); }
@@ -6423,6 +6668,7 @@ function _downloadOne(url, onProgress, onDone) {
                 showToast('\u274c ' + fname + ': ' + errMsg);
                 console.error('cache download error', url, errMsg, err);
                 _cacheStatus[url] = 'error';
+                delete _dlProgress[url];
                 _refreshBadge(url);
                 onDone(false);
             });
@@ -6448,11 +6694,11 @@ function _batchDownload(urls, onAllDone, onProgress, batchId) {
     var succeeded = 0;
     var _onAllDoneCalled = false;
 
-    var concur = 3;
+    var concur = 3;   // v2.8.0：默认 3 路并发下载（3g 不再降到 1）；仅 2g/省流模式降为 2
     try {
         var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-        if ((conn && (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g' || conn.effectiveType === '3g')) ||
-            navigator.saveData) concur = 1;
+        if ((conn && (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g')) ||
+            navigator.saveData) concur = 2;
     } catch(e) {}
 
     if (total === 0) { onAllDone(0, 0); return; }
@@ -6478,15 +6724,18 @@ function _batchDownload(urls, onAllDone, onProgress, batchId) {
             else setTimeout(next, 0);
             return;
         }
-        // 播放优先：在线流式加载未缓存音频（非 blob 源）时暂缓 600ms
+        // 播放优先：仅起播缓冲期（加载中且还没缓冲到可播）暂缓 600ms，上限 25 次；
+        // 播放进入稳定期后不再让路，3 路全速下载（v2.8.0 收紧：此前缺 readyState 条件，
+        // 长音频边下边播时下载最长空转 24 秒，观感上像"下载不动/失败"）
         if (!audio.paused && audio.src && audio.src.indexOf('blob:') !== 0 &&
-            audio.networkState === 2 && yieldCount < 40) {
+            audio.networkState === 2 && audio.readyState < 3 && yieldCount < 25) {
             yieldCount++;
             cursor--;
             setTimeout(next, 600);
             return;
         }
-        // 大文件互斥（事件驱动）：已知 >15MB 的文件同一时间只跑 1 个
+        // 大文件互斥（事件驱动）：已知 >15MB 的文件同一时间只跑 1 个；
+        // 大小未知时乐观开跑，响应头（onMeta）发现是大文件立即登记，后续大文件自动排队
         var isBig = (_fileSizeCache[url] || 0) > 15 * 1048576;
         if (isBig && _bigFileActive > 0) {
             cursor--;
@@ -6494,8 +6743,12 @@ function _batchDownload(urls, onAllDone, onProgress, batchId) {
             return;
         }
         if (isBig) _bigFileActive++;
-        _downloadOne(url, null, function(ok) {
-            if (isBig) {
+        var dynBig = false;
+        _downloadOne(url, function(p) {   // v2.8.0：单文件百分比 → badge
+            _dlProgress[url] = p;
+            _throttledBadgeRefresh(url);
+        }, function(ok) {
+            if (isBig || dynBig) {
                 _bigFileActive--;
                 if (_bigWaitQueue.length) {
                     var waiter = _bigWaitQueue.shift();
@@ -6509,15 +6762,23 @@ function _batchDownload(urls, onAllDone, onProgress, batchId) {
             if (onProgress) onProgress(realDone, realTotal);
             if (done === total) finish(false);
             else next();
+        }, function(len) {
+            if (!isBig && !dynBig && len > 15 * 1048576) {
+                dynBig = true;   // 下载途中才发现的大文件：计入互斥，别让下一个大文件同时开跑
+                _bigFileActive++;
+            }
         });
     }
 
     for (var i = 0; i < Math.min(concur, total); i++) next();
 }
 
-function _badgeText(status) {
+function _badgeText(url, status) {
     if (status === 'cached')  return '✅ 已缓存';
-    if (status === 'caching') return '⏳ 缓存中';
+    if (status === 'caching') {   // v2.8.0：显示单文件实时百分比
+        var p = _dlProgress[url];
+        return (typeof p === 'number' && p > 0.005) ? ('⬇️ ' + Math.min(99, Math.round(p * 100)) + '%') : '⏳ 缓存中';
+    }
     if (status === 'error')   return '❌ 失败';
     return '';
 }
@@ -6536,10 +6797,18 @@ function _applyBadge(el, url) {
         el.className   = 'cache-badge retry';
         el.onclick     = function(e) { e.stopPropagation(); _retrySingle(url); };
     } else {
-        el.textContent = _badgeText(status);
+        el.textContent = _badgeText(url, status);
         el.className   = _badgeClass(status);
         el.onclick     = null;
     }
+}
+
+// v2.8.0：下载进度 badge 节流刷新（400ms 一次，避免高频 DOM 抖动）
+function _throttledBadgeRefresh(url) {
+    var now = Date.now();
+    if (_dlBadgeTs[url] && now - _dlBadgeTs[url] < 400) return;
+    _dlBadgeTs[url] = now;
+    _refreshBadge(url);
 }
 
 function _refreshBadge(url) {
@@ -6550,7 +6819,10 @@ function _refreshBadge(url) {
 
 function _retrySingle(url) {
     showToast('重试下载中…');
-    _downloadOne(url, null, function(ok) {
+    _downloadOne(url, function(p) {
+        _dlProgress[url] = p;
+        _throttledBadgeRefresh(url);
+    }, function(ok) {
         showToast(ok ? '重试成功 ✅' : '重试失败，请检查网络');
     });
 }
@@ -6733,7 +7005,7 @@ function _doStartBatchCache(urls) {
     var alreadyCached = urls.filter(function(u) { return _cacheStatus[u] === 'cached'; }).length;
     if (alreadyCached === urls.length) { showToast('所选文件全部已缓存 ✅'); return; }
     var toDownload = urls.length - alreadyCached;
-    showToast('开始缓存 ' + toDownload + ' 首（大文件自动串行，切目录不中断）');
+    showToast('开始缓存 ' + toDownload + ' 首（3 路并行，大文件自动串行，切目录不中断）');
 
     // 【v2.7.0】WakeLock 跨批次共享：旧批次开启的锁由最新活跃批次统一回收，杜绝泄漏
     if (!isWakeLockEnabled && !_batchWakeLockOn) {
@@ -6806,7 +7078,7 @@ function _playFromCache(url, name) {
 
     // 离线空间点击的音频绝对在本地，直接生成 Blob URL
     _idbGet(url, function(buffer) {
-        if (buffer && buffer.byteLength > 0) {
+        if (buffer && (buffer.size || buffer.byteLength) > 0) {   // v2.8.0：兼容 Blob 缓存
             var blob = new Blob([buffer], { type: _guessMime(url) });
             _currentObjectUrl = URL.createObjectURL(blob);
             doPlay(_currentObjectUrl);
