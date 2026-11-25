@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.9.1</title>
+    <title>英语精听播放器 v2.9.2</title>
     <!-- 【v2.7.0】预连接 API 与 CDN 域名（须与下方 APP_CONFIG 保持同步），冷启动不再抢握手 -->
     <link rel="preconnect" href="https://res.evanyin.dpdns.org" crossorigin>
     <link rel="preconnect" href="https://cdn.evanyin.dpdns.org" crossorigin>
@@ -871,14 +871,6 @@
         min-height: 30px;
     }
 
-    .sub-bar-icon {
-        font-size: 14px;
-        margin-right: 7px;
-        -webkit-flex-shrink: 0;
-        flex-shrink: 0;
-        color: var(--ios-blue);
-    }
-
     .sub-bar-text {
         -webkit-flex: 1;
         flex: 1;
@@ -1224,7 +1216,7 @@
         font-size: 11px;
         color: var(--ios-subtext);
         margin-top: 4px;
-    }/* ===== v2.9.0：每日听力目标 ===== */
+    }/* ===== v2.9.0 每日听力目标（v2.9.2：周/月目标统一为"每天至少 N 分钟"口径）===== */
 
     .st-goal-card {
         background: var(--ios-card);
@@ -1286,9 +1278,9 @@
         font-size: 14px;
         font-weight: 700;
         color: var(--ios-text);
-        min-width: 62px;
+        min-width: 92px;
         text-align: center;
-    }
+    }/* v2.9.2：62→92px，容得下"每天 480 分钟" */
 
     .st-goal-bar {
         height: 10px;
@@ -2643,7 +2635,6 @@
     <div class="player-bar" id="playerBar">
         <div class="sub-bar" id="subBar">
             <div class="sub-bar-inner" onclick="_openSubPanel()">
-                <span class="sub-bar-icon">💬</span>
                 <span class="sub-bar-text sub-dim" id="subBarText">字幕</span>
                 <span class="sub-bar-badge" id="subBarBadge" style="display:none">循环×2</span>
             </div>
@@ -2758,7 +2749,7 @@
                     <span>空间</span>
                 </button>
             </div>
-            <div class="version-tag">Build v2.9.1</div>
+            <div class="version-tag">Build v2.9.2</div>
         </div>
     </div>
 
@@ -3003,7 +2994,7 @@
         // 精听快退/快进步长（长按切换）
         SHADOW_PAUSES: [0, 1, 2, 3, 5],
         // 跟读停顿秒数（0=关闭）
-        VERSION: 'v2.9.1'
+        VERSION: 'v2.9.2'
     };
     var API_ROOT = APP_CONFIG.API_ROOT;
     var SITE_ROOT = APP_CONFIG.SITE_ROOT;
@@ -8803,14 +8794,20 @@
     }
 
     /* ==================================================================
-     * v2.9.1：听力目标（当日 / 当周 / 当月）—— 统计页顶部进度卡。
-     * 周期可切：日目标天天清零、周目标按周一至周日、月目标按自然月；
-     * 设定一次长期有效，新周期自动重新计进度，免每天重设（用户诉求）。
-     * 存储（全部为纯数字分钟，互不干扰）：
-     *   daily_goal_v1  日目标（沿用 v2.9.0 key，格式不变，完全兼容）
-     *   week_goal_v1   周目标（新增）
-     *   month_goal_v1  月目标（新增）
-     *   goal_period_v1 当前选中周期 day|week|month（新增）
+     * v2.9.2：听力目标（当日 / 当周 / 当月）—— 统计页顶部进度卡。
+     * 三个周期统一按"每天至少 N 分钟"设定（用户诉求：当周/当月也是
+     * 每天至少多少分钟，而不是整周/整月总量）：
+     *   今日 —— 今天至少 N 分钟，当天有效；
+     *   本周 —— 每天至少 N 分钟，周一至周日逐日考核，设一次长期有效；
+     *   本月 —— 每天至少 N 分钟，自然月逐日考核，设一次长期有效。
+     * 周期进度条 = 已听分钟 ÷（N × 已过天数），即"是否跟上每天 N 分钟的
+     * 节奏"；状态行另给达标天数（当日 ≥ N 分钟记 1 天）与今日待补量。
+     * 存储（纯数字分钟，互不干扰）：
+     *   daily_goal_v1  日目标（沿用 v2.9.0 key，格式不变）
+     *   week_goal_v1   周·每天目标（v2.9.2 起口径为"每天"；读到 v2.9.1 旧版
+     *                  "整周总量"值时自动 ÷7 换算并回写）
+     *   month_goal_v1  月·每天目标（旧"整月总量"自动 ÷30 换算）
+     *   goal_period_v1 当前选中周期 day|week|month
      * 统计页开着且正在播放时每 15 秒原地刷新进度条与文案（不重绘整页、不跳滚动位置）。
      * ================================================================== */
     var _GOAL_KEYS = {
@@ -8820,14 +8817,14 @@
     };
     var _GOAL_CAPS = {
         day: 480,
-        week: 3360,
-        month: 13440
-    }; // 上限：日 8h / 周 56h / 月 224h
+        week: 480,
+        month: 480
+    }; // 上限统一：每天最多 8 小时
     var _GOAL_STEPS = {
         day: 5,
-        week: 30,
-        month: 60
-    }; // 调整步长：日 ±5 / 周 ±30 / 月 ±60
+        week: 5,
+        month: 5
+    }; // 调整步长统一 ±5 分钟/天
     var _GOAL_LABELS = {
         day: '今日',
         week: '本周',
@@ -8845,6 +8842,14 @@
             _goalPeriod = _gpInit;
         ['day', 'week', 'month'].forEach(function(p) {
             var v = parseInt(localStorage.getItem(_GOAL_KEYS[p]) || '0', 10) || 0;
+            // v2.9.2 迁移：v2.9.1 的周/月值是"整周期总量"（周可到 3360、月可到 13440），
+            // 超出每天上限 480 的按 ÷7 / ÷30 换算回"每天"口径并回写存储
+            if (p !== 'day' && v > _GOAL_CAPS[p]) {
+                v = Math.round(v / (p === 'week' ? 7 : 30) / 5) * 5;
+                try {
+                    localStorage.setItem(_GOAL_KEYS[p], String(v));
+                } catch (e2) {}
+            }
             if (v < 0)
                 v = 0;
             if (v > _GOAL_CAPS[p])
@@ -8853,25 +8858,42 @@
         });
     } catch (e) {}
 
-    // v2.9.1：当前周期的累计收听秒数
-    function _goalPeriodSec() {
+    // v2.9.2：当前周期的日序列与已过天数 —— 今日 1 天；本周周一至周日 7 天，
+    // 已过 = 今天在数组中的序号（周一=1 … 周日=7）；本月自然月，已过 = 今天几号
+    function _goalPeriodDays() {
+        var today = todayKey();
         if (_goalPeriod === 'day')
-            return getDaySec(todayKey());
+            return {
+                dates: [today],
+                elapsed: 1
+            };
         if (_goalPeriod === 'week') {
-            var wd = getWeekDates(0),
-                s = 0;
-            for (var i = 0; i < 7; i++)
-                s += getDaySec(wd[i]);
-            return s;
+            var wd = getWeekDates(0);
+            return {
+                dates: wd,
+                elapsed: wd.indexOf(today) + 1
+            };
         }
         var d = new Date();
         var y = d.getFullYear(),
             m = d.getMonth();
         var last = new Date(y, m + 1, 0).getDate();
-        var total = 0;
+        var dates = [];
         for (var j = 1; j <= last; j++)
-            total += getDaySec(y + '-' + pad2(m + 1) + '-' + pad2(j));
-        return total;
+            dates.push(y + '-' + pad2(m + 1) + '-' + pad2(j));
+        return {
+            dates: dates,
+            elapsed: d.getDate()
+        };
+    }
+
+    // 当前周期的累计收听秒数（v2.9.2 起由日序列汇总）
+    function _goalPeriodSec() {
+        var pd = _goalPeriodDays(),
+            s = 0;
+        for (var i = 0; i < pd.dates.length; i++)
+            s += getDaySec(pd.dates[i]);
+        return s;
     }
 
     function stSetGoalPeriod(p) {
@@ -8909,29 +8931,47 @@
     function _goalProgress() {
         var p = _goalPeriod;
         var lbl = _GOAL_LABELS[p];
-        var doneSec = _goalPeriodSec();
+        var pd = _goalPeriodDays();
         var goalSec = _goalMin[p] * 60;
+        // 只累计已过天数（含今天）：还没到来的日子不拖低进度
+        var doneSec = 0,
+            daysMet = 0;
+        for (var i = 0; i < pd.elapsed; i++) {
+            var ds = getDaySec(pd.dates[i]);
+            doneSec += ds;
+            if (goalSec > 0 && ds >= goalSec)
+                daysMet++;
+        }
         var doneMin = Math.floor(doneSec / 60);
         var pct = 0,
             status = '',
             achieved = false;
-        if (_goalMin[p] <= 0) {
-            var suggest = {
-                day: 30,
-                week: 180,
-                month: 720
-            }[p];
-            status = '未设定目标 · ' + lbl + '已听 ' + doneMin + ' 分钟（点 ＋ 设定，如 ' + suggest + ' 分钟）';
-        } else if (doneSec >= goalSec) {
-            achieved = true;
-            pct = 100;
-            var exc = Math.floor((doneSec - goalSec) / 60);
-            status = '🎉 ' + lbl + '目标已达成！已听 ' + doneMin + ' 分钟' + (exc > 0 ? '（超出 ' + exc + ' 分钟）' : '');
+        if (goalSec <= 0) {
+            status = '未设定目标 · ' + lbl + '已听 ' + doneMin + ' 分钟（点 ＋ 设定，如每天 30 分钟）';
+        } else if (p === 'day') {
+            if (doneSec >= goalSec) {
+                achieved = true;
+                pct = 100;
+                var exc = Math.floor((doneSec - goalSec) / 60);
+                status = '🎉 今日目标已达成！已听 ' + doneMin + ' 分钟' + (exc > 0 ? '（超出 ' + exc + ' 分钟）' : '');
+            } else {
+                pct = Math.round(doneSec / goalSec * 100);
+                status = '今日已听 ' + doneMin + ' 分钟 · ' +
+                (goalSec - doneSec <= 60 ? '还差不到 1 分钟' : '还差 ' + Math.ceil((goalSec - doneSec) / 60) + ' 分钟') + '达标';
+            }
         } else {
-            var remSec = goalSec - doneSec;
-            pct = Math.round(doneSec / goalSec * 100);
-            status = lbl + '已听 ' + doneMin + ' 分钟 · ' +
-            (remSec <= 60 ? '还差不到 1 分钟' : '还差 ' + Math.ceil(remSec / 60) + ' 分钟') + '达标';
+            // 周/月：进度条 = 已听 ÷（每天 N 分钟 × 已过天数），跟上节奏即 100%
+            var paceSec = goalSec * pd.elapsed;
+            pct = Math.min(100, Math.round(doneSec / paceSec * 100));
+            if (daysMet === pd.elapsed) {
+                achieved = true;
+                status = '🎉 ' + lbl + '每天目标保持中 · 达标 ' + daysMet + '/' + pd.elapsed + ' 天 · 已听 ' + doneMin + ' 分钟';
+            } else {
+                status = lbl + '已听 ' + doneMin + ' 分钟 · 达标 ' + daysMet + '/' + pd.elapsed + ' 天 · 每天至少 ' + _goalMin[p] + ' 分钟';
+                var todayLeft = goalSec - getDaySec(todayKey());
+                if (todayLeft > 0)
+                    status += ' · 今日还差 ' + Math.ceil(todayLeft / 60) + ' 分钟';
+            }
         }
         return {
             pct: pct,
@@ -8968,15 +9008,15 @@
         '<div class="st-goal-head" style="margin-top:2px;">' +
         '<div class="st-goal-ctrl">' +
         '<button class="st-goal-btn" onclick="stAdjGoal(-' + step + ')" aria-label="减少 ' + step + ' 分钟">−</button>' +
-        '<div class="st-goal-val">' + (cur > 0 ? cur + ' 分钟' : '未设定') + '</div>' +
+        '<div class="st-goal-val">' + (cur > 0 ? (_goalPeriod === 'day' ? cur + ' 分钟' : '每天 ' + cur + ' 分钟') : '未设定') + '</div>' +
         '<button class="st-goal-btn" onclick="stAdjGoal(' + step + ')" aria-label="增加 ' + step + ' 分钟">＋</button>' +
         '</div>' +
         '</div>' +
         '<div class="st-goal-hint">' + (_goalPeriod === 'day'
-        ? '每日目标 · 当天有效'
+        ? '每日目标 · 今天至少' + (cur > 0 ? ' ' + cur + ' 分钟' : '') + '，当天有效'
         : _goalPeriod === 'week'
-        ? '每周目标 · 周一至周日统计，设一次长期有效，无需每天重设'
-        : '每月目标 · 自然月统计，设一次长期有效，无需每天重设') + '</div>' +
+        ? '每周目标 · 每天至少' + (cur > 0 ? ' ' + cur + ' 分钟' : '') + '，周一至周日逐日考核，设一次长期有效'
+        : '每月目标 · 每天至少' + (cur > 0 ? ' ' + cur + ' 分钟' : '') + '，自然月逐日考核，设一次长期有效') + '</div>' +
         '<div class="st-goal-bar" style="margin-top:8px;"><div class="st-goal-fill' + (p.achieved ? ' done' : '') + '" id="stGoalFill" style="width:' + p.pct + '%"></div></div>' +
         '<div class="st-goal-status" id="stGoalStatus">' + p.status + '</div>' +
         '</div>';
