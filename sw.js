@@ -1,5 +1,5 @@
-/* 英语精听播放器 Service Worker v2.9.1 */
-var CACHE_NAME = 'player-shell-v2.9.1';
+/* 英语精听播放器 Service Worker v2.9.2 */
+var CACHE_NAME = 'player-shell-v2.9.2';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
