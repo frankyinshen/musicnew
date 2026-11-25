@@ -1,5 +1,5 @@
-/* 英语精听播放器 Service Worker v2.9.0 */
-var CACHE_NAME = 'player-shell-v2.9.0';
+/* 英语精听播放器 Service Worker v2.9.1 */
+var CACHE_NAME = 'player-shell-v2.9.1';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
@@ -164,7 +164,18 @@ function _openIDB() {
                 db.createObjectStore(IDB_SUB_STORE);
             }
         };
-        req.onsuccess = function(e) { _swIDB = e.target.result; resolve(_swIDB); };
+        req.onsuccess = function(e) {
+            _swIDB = e.target.result;
+            // 【v2.9.1】iOS 后台挂起/系统回收连接后句柄会失效，之后每次 transaction
+            // 都抛 InvalidStateError 并静默返回 null → 整个离线缓存与字幕读取失灵。
+            // onclose 置空句柄，下次使用时自动重开；onversionchange 主动让位防 upgrade 阻塞
+            _swIDB.onclose = function() { _swIDB = null; };
+            _swIDB.onversionchange = function() {
+                try { _swIDB.close(); } catch (err) {}
+                _swIDB = null;
+            };
+            resolve(_swIDB);
+        };
         req.onerror = function() { resolve(null); };
     });
 }
@@ -285,15 +296,19 @@ self.addEventListener('fetch', function(e) {
                 return fetch(req).then(function(resp) {
                     if (resp && resp.status === 200) {
                         var cl = parseInt(resp.headers.get('Content-Length') || '0', 10);
-                        // 只缓存小文件（<=512KB），避免误把大资源当字幕
-                        if (cl === 0 || cl <= 524288) {
+                        // 【v2.9.1】校验 Content-Type：SPA 回退会以 200 返回 text/html 错误页，
+                        // 旧版照存不误 → 幽灵字幕条目永久留在离线空间列表里
+                        var ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+                        if ((cl === 0 || cl <= 524288) && ct.indexOf('text/html') < 0) {
                             // 【v2.7.0·P0-1.1】取原始字节（arrayBuffer）而非文本读取
                             // （文本读取强制 UTF-8 解码，GBK/UTF-16 字幕写进 IDB 即永久乱码）
-                            resp.clone().arrayBuffer().then(function(buf) {
+                            // 【v2.9.1】写入包进 e.waitUntil：SW 保活到落盘完成，不再被提前回收
+                            var _writeP = resp.clone().arrayBuffer().then(function(buf) {
                                 if (buf && buf.byteLength > 0 && buf.byteLength <= 524288) {
                                     putSubtitleBuffer(url, buf);
                                 }
                             }).catch(function() {});
+                            try { e.waitUntil(_writeP); } catch (err2) {}
                         }
                     }
                     return resp;
