@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>英语精听播放器 v2.8.0</title>
+    <title>英语精听播放器 v2.9.0</title>
     <!-- 【v2.7.0】预连接 API 与 CDN 域名（须与下方 APP_CONFIG 保持同步），冷启动不再抢握手 -->
     <link rel="preconnect" href="https://res.evanyin.dpdns.org" crossorigin>
     <link rel="preconnect" href="https://cdn.evanyin.dpdns.org" crossorigin>
@@ -408,7 +408,7 @@
             transition: max-height 0.3s ease, opacity 0.25s ease;
             padding: 0 14px;
         }
-        .sub-bar.show { max-height: 216px; opacity: 1; }   /* v2.8.0：字幕条高度再加 50%（144→216px），双语长句完整显示 */
+        .sub-bar.show { max-height: 324px; opacity: 1; }   /* v2.9.0：字幕条高度再加 50%（216→324px），双语长句完整显示 */
         .sub-bar-inner {
             display: -webkit-flex; display: flex;
             -webkit-align-items: center; align-items: center;
@@ -421,9 +421,9 @@
             color: var(--ios-blue);
         }
         .sub-bar-text {
-            -webkit-flex: 1; flex: 1; font-size: 15px; line-height: 1.4;   /* v2.8.0：13→15px 尽量大，JS 自动缩回 13px */
+            -webkit-flex: 1; flex: 1; font-size: 19.5px; line-height: 1.4;   /* v2.9.0：15→19.5px（+30%），放不下 JS 自动缩回 15px */
             color: var(--ios-text); overflow: hidden;
-            max-height: 200px;   /* v2.8.0：配合字幕条 216px，双语四行不裁剪 */
+            max-height: 308px;   /* v2.9.0：配合字幕条 324px，双语长句完整显示 */
         }
         .sub-bar-text.sub-dim { color: var(--ios-subtext); }
         .sub-bar-text.scrollable { overflow-y: auto; -webkit-overflow-scrolling: touch; }   /* 仍放不下：区域内上下滑动 */
@@ -528,6 +528,42 @@
         .st-cumul-num { font-size: 38px; font-weight: 700; color: #27ae60; letter-spacing: -1px; line-height: 1; }
         .st-cumul-unit { font-size: 15px; font-weight: 600; color: #27ae60; margin-left: 3px; margin-bottom: 4px; }
         .st-cumul-sub { font-size: 11px; color: var(--ios-subtext); margin-top: 4px; }
+
+        /* ===== v2.9.0：每日听力目标 ===== */
+        .st-goal-card {
+            background: var(--ios-card); border-radius: 16px;
+            padding: 14px 16px 12px 16px; margin-bottom: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .st-goal-head {
+            display: -webkit-flex; display: flex;
+            -webkit-align-items: center; align-items: center;
+            -webkit-justify-content: space-between; justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .st-goal-title { font-size: 14px; font-weight: 700; color: var(--ios-text); }
+        .st-goal-ctrl {
+            display: -webkit-flex; display: flex;
+            -webkit-align-items: center; align-items: center;
+        }
+        .st-goal-btn {
+            width: 30px; height: 30px; border-radius: 15px; border: none; padding: 0;
+            background: rgba(0,122,255,0.12); color: var(--ios-blue);
+            font-size: 19px; font-weight: 700; line-height: 1; cursor: pointer;
+            display: -webkit-flex; display: flex;
+            -webkit-align-items: center; align-items: center;
+            -webkit-justify-content: center; justify-content: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .st-goal-btn:active { opacity: 0.5; }
+        .st-goal-val { font-size: 14px; font-weight: 700; color: var(--ios-text); min-width: 62px; text-align: center; }
+        .st-goal-bar { height: 10px; border-radius: 5px; overflow: hidden; background: rgba(120,120,128,0.15); }
+        .st-goal-fill {
+            height: 100%; border-radius: 5px; background: var(--ios-blue);
+            -webkit-transition: width 0.4s ease; transition: width 0.4s ease;
+        }
+        .st-goal-fill.done { background: #34c759; }
+        .st-goal-status { font-size: 13px; color: var(--ios-subtext); margin-top: 8px; }
 
         .st-week-card {
             background: var(--ios-card); border-radius: 16px;
@@ -1021,6 +1057,14 @@
         .cm-handle { width: 36px; height: 4px; border-radius: 2px; background: #ccc; margin: 10px auto 0; flex-shrink: 0; }
         .cm-title  { text-align: center; font-size: 17px; font-weight: 700; color: var(--ios-text); padding: 14px 16px 4px; flex-shrink: 0; }
         .cm-summary { text-align: center; font-size: 13px; color: var(--ios-subtext); padding: 0 24px 10px; flex-shrink: 0; }
+        /* v2.9.0：离线空间"显示所有文件"切换（字幕默认隐藏，防遗漏可手动清理） */
+        .cm-showall-btn {
+            display: block; margin: 0 auto 10px; padding: 6px 14px;
+            background: rgba(0,122,255,0.1); color: var(--ios-blue);
+            border: none; border-radius: 14px; font-size: 12px; font-weight: 600;
+            cursor: pointer; flex-shrink: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
         .cm-list   { overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; padding: 0 16px; }
         .cm-item   {
             display: flex; align-items: center; gap: 12px;
@@ -1227,7 +1271,7 @@
                 <span>💾</span><span>空间</span>
             </button>
         </div>
-        <div class="version-tag">Build v2.8.0</div>
+        <div class="version-tag">Build v2.9.0</div>
     </div>
 </div>
 
@@ -1355,6 +1399,7 @@
     <div class="cm-handle"></div>
     <div class="cm-title">💾 离线空间管理</div>
     <div class="cm-summary" id="cmSummary">计算中…</div>
+    <button class="cm-showall-btn" id="cmShowAllBtn" onclick="cmToggleShowAll()" style="display:none" aria-label="切换显示字幕文件">显示所有文件</button>
     <div class="cm-list" id="cmList"></div>
     <div class="cm-actions">
         <button class="cm-btn cm-btn-danger" onclick="clearAllCache()">🗑️ 清空所有缓存</button>
@@ -1403,7 +1448,7 @@ var APP_CONFIG = {
     PROGRAMME_EPOCH: '2026-03-09',                      // 开营日期（周数计算基准）
     SEEK_STEPS:      [3, 5, 10, 15],                    // 精听快退/快进步长（长按切换）
     SHADOW_PAUSES:   [0, 1, 2, 3, 5],                   // 跟读停顿秒数（0=关闭）
-    VERSION:         'v2.8.0'
+    VERSION:         'v2.9.0'
 };
 var API_ROOT = APP_CONFIG.API_ROOT;
 var SITE_ROOT = APP_CONFIG.SITE_ROOT;
@@ -2399,7 +2444,7 @@ function _loadSubtitleForTrack(trackUrl, trackName, forceProbe) {
     // 【v2.7.0·P1-3.1】目录索引可靠且非手动重试时：
     //   · 有同名字幕 → 只请求这 1 个确定存在的 URL
     //   · 目录无字幕 → 直接置无字幕状态（0 次 404 探测，批量缓存 N 首省下 3N 次无效请求）
-    // 仅 forceProbe（用户点“未找到字幕（点击重试）”）或未索引曲目（收藏夹/恢复会话）才全量猜词
+    // 仅 forceProbe（v2.9.0 起由 💬 字幕开关重新打开触发）或未索引曲目（收藏夹/恢复会话）才全量猜词
     var cands;
     var it = _findTrackItemByUrl(trackUrl);
     if (!forceProbe && it && it.dirIndexed) {
@@ -2572,21 +2617,48 @@ function _prefetchSubtitle(audioUrl) {
 }
 
 // ---- 删除音频缓存时顺带删同名字幕 ----
+// v2.9.0 重写：不再按"猜词候选"删（目录索引不在场时会漏 .zh / .en 等语言后缀变体），
+// 改为扫描 subtitles store 全部 Key：同目录 + 文件主名相同（或主名 + 语言后缀，
+// 如 track.zh.srt / track.en.srt）即视为该音频的字幕，一并删除并同步失效 SW 缓存
 function _deleteSiblingSubtitles(audioUrl) {
     _openIDB(function(db) {
         if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_SUB_STORE)) return;
-        var cands = _subtitleCandidates(audioUrl, '');
-        for (var i = 0; i < cands.length; i++) {
-            (function(u) {
-                var k = _subKey(u);
-                try {
-                    db.transaction(IDB_SUB_STORE, 'readwrite').objectStore(IDB_SUB_STORE).delete(k);
-                    delete _idbSizeMap[k];
-                    delete _subTextCache[u];
-                } catch(e) {}
-            })(cands[i]);
+        var dec = function(s) { try { return decodeURIComponent(s); } catch(e) { return s; } };
+        var aFn = dec(String(audioUrl).split('/').pop() || '');
+        var baseLo = aFn.replace(/\.[^.]+$/, '').toLowerCase();
+        var dir = String(audioUrl).slice(0, String(audioUrl).lastIndexOf('/') + 1);
+        var LANGS = ',zh,cn,chs,cht,sc,tc,en,eng,us,uk,en-us,en-gb,zh-cn,zh-tw,zh-hk,zh-hans,zh-hant,chinese,english,double,dual,bi,bilingual,';
+        function isSibling(key) {
+            key = String(key);
+            if (key.slice(0, key.lastIndexOf('/') + 1) !== dir) return false;   // 仅同目录
+            var fn = dec(key.split('/').pop() || '');
+            var ext = (fn.indexOf('.') > -1 ? fn.split('.').pop() : '').toLowerCase();
+            if (SUBTITLE_EXTS.indexOf(ext) < 0) return false;                   // 必须是字幕扩展名
+            var stem = fn.replace(/\.[^.]+$/, '').toLowerCase();
+            if (stem === baseLo) return true;
+            var dot = stem.lastIndexOf('.');                                    // track.zh.srt → 主名 track + 语言 zh
+            if (dot > 0) return stem.slice(0, dot) === baseLo && LANGS.indexOf(',' + stem.slice(dot + 1) + ',') >= 0;
+            return false;
         }
-        _scheduleSizeMapSave();   // v2.7.0：防抖落盘
+        try {
+            var keys = [];
+            var tx = db.transaction(IDB_SUB_STORE, 'readonly');
+            tx.objectStore(IDB_SUB_STORE).getAllKeys().onsuccess = function(e) { keys = e.target.result || []; };
+            tx.oncomplete = function() {
+                var removed = 0;
+                for (var i = 0; i < keys.length; i++) {
+                    if (!isSibling(keys[i])) continue;
+                    removed++;
+                    try {
+                        db.transaction(IDB_SUB_STORE, 'readwrite').objectStore(IDB_SUB_STORE).delete(keys[i]);
+                        delete _idbSizeMap[keys[i]];
+                        delete _subTextCache[keys[i]];
+                        _notifySWCacheChange2(keys[i], true);   // v2.9.0：同步失效 SW 字幕缓存（旧版漏发）
+                    } catch(e2) {}
+                }
+                if (removed > 0) _scheduleSizeMapSave();        // v2.7.0：防抖落盘
+            };
+        } catch(e) {}
     });
 }
 
@@ -2616,59 +2688,54 @@ function _updateSubTimeline(forceScroll) {
 }
 
 // ---- 底部字幕条文案 ----
+// v2.9.0：仅"确有字幕"（ok）时才展开字幕栏 —— 无字幕（none）、探测中（loading）、
+// 手动关闭（off）、未播放（idle）一律完全收起，没有字幕不再占用任何空间；
+// 探测命中后展开（0.3s 过渡自然弹入）。手动重试入口移至 💬 字幕开关（重新打开即全量重探）
 function _renderSubBarText() {
     var bar = document.getElementById('subBar');
     var el  = document.getElementById('subBarText');
     if (!bar || !el) return;
-    if (_subBarState === 'idle' || _subBarState === 'off') {
+    if (_subBarState !== 'ok' || !_trackSub) {
         bar.className = 'sub-bar';
         _updateSubBarBadge();
         _updateSubToggleLabel();
         return;
     }
     bar.className = 'sub-bar show';
-    if (_subBarState === 'loading') {
+    if (_subActiveIdx >= 0 && _trackSub.cues[_subActiveIdx]) {
+        var cue = _trackSub.cues[_subActiveIdx];
+        var inCue = (audio.currentTime || 0) >= cue.start && (audio.currentTime || 0) < cue.end;
+        // v2.8.0：双语逐行渲染（英文一行在上、中文一行在下），字号尽量大，放不下自动缩，仍放不下可滑动
+        var lines = (cue.lines && cue.lines.length) ? cue.lines : [(cue.text || '· · ·')];
+        el.className = 'sub-bar-text';
         el.style.fontSize = '';
-        el.textContent = '字幕探测中…';
-        el.className = 'sub-bar-text sub-dim';
-    } else if (_subBarState === 'none') {
-        el.style.fontSize = '';
-        el.textContent = '未找到字幕（点击重试）';
-        el.className = 'sub-bar-text sub-dim';
-    } else if (_subBarState === 'ok' && _trackSub) {
-        if (_subActiveIdx >= 0 && _trackSub.cues[_subActiveIdx]) {
-            var cue = _trackSub.cues[_subActiveIdx];
-            var inCue = (audio.currentTime || 0) >= cue.start && (audio.currentTime || 0) < cue.end;
-            // v2.8.0：双语逐行渲染（英文一行在上、中文一行在下），字号尽量大，放不下自动缩，仍放不下可滑动
-            var lines = (cue.lines && cue.lines.length) ? cue.lines : [(cue.text || '· · ·')];
-            el.className = 'sub-bar-text';
-            el.style.fontSize = '';
-            el.innerHTML = '';
-            for (var li = 0; li < lines.length; li++) {
-                var d = document.createElement('div');
-                d.className = 'sub-bar-line' + (_isZhLine(lines[li]) ? ' zh' : '') + (inCue ? '' : ' dim');
-                d.textContent = lines[li];
-                el.appendChild(d);
-            }
-            _fitSubBarText(el);
-        } else {
-            el.textContent = '♪';
-            el.className = 'sub-bar-text sub-dim';
+        el.innerHTML = '';
+        for (var li = 0; li < lines.length; li++) {
+            var d = document.createElement('div');
+            d.className = 'sub-bar-line' + (_isZhLine(lines[li]) ? ' zh' : '') + (inCue ? '' : ' dim');
+            d.textContent = lines[li];
+            el.appendChild(d);
         }
+        _fitSubBarText(el);
+    } else {
+        el.style.fontSize = '';
+        el.textContent = '♪';
+        el.className = 'sub-bar-text sub-dim';
     }
     _updateSubBarBadge();
     _updateSubToggleLabel();
 }
 
-// v2.8.0：字幕条自适应字号 —— 15px 起，溢出则每次 -1px 直到 13px（原字号）；
-// 仍放不下不再截断，改为区域内上下滑动查看
+// v2.9.0：字幕条自适应字号 —— 19.5px 起（v2.8.0 的 15px 再 +30%），溢出则每次
+// -0.5px 直到 15px（v2.8.0 字号，即用户认可的"当前大小"）；仍放不下不再截断，
+// 改为区域内上下滑动查看
 function _fitSubBarText(el) {
     el.classList.remove('scrollable');
-    var fs = 15;
+    var fs = 19.5;
     el.style.fontSize = fs + 'px';
     var guard = 0;
-    while (fs > 13 && el.scrollHeight > el.clientHeight + 1 && guard++ < 4) {
-        fs--;
+    while (fs > 15 && el.scrollHeight > el.clientHeight + 1 && guard++ < 10) {
+        fs -= 0.5;
         el.style.fontSize = fs + 'px';
     }
     if (el.scrollHeight > el.clientHeight + 1) el.classList.add('scrollable');
@@ -2857,9 +2924,11 @@ function toggleSubBarUI() {
     _subEnabled = !_subEnabled;
     try { localStorage.setItem('subtitles_on_v1', _subEnabled ? '1' : '0'); } catch(e) {}
     if (_subEnabled) {
-        // 重新打开：若当前曲目还没字幕则立刻探测
+        // 重新打开：若当前曲目还没字幕则立刻全量重探
+        //（v2.9.0：字幕栏不再显示"未找到字幕（点击重试）"，💬 开关成为手动重试
+        //  入口；forceProbe 绕过目录索引结论，目录里后补的字幕也能被发现）
         if (!_trackSub && (_currentTrackOrigUrl || _latestPlayRequestUrl)) {
-            _loadSubtitleForTrack(_currentTrackOrigUrl || _latestPlayRequestUrl, '');
+            _loadSubtitleForTrack(_currentTrackOrigUrl || _latestPlayRequestUrl, '', true);
         } else {
             _subBarState = _trackSub ? 'ok' : 'none';
             _renderSubBarText();
@@ -5772,6 +5841,84 @@ function closeStats() {
     flushStats();
 }
 
+/* ==================================================================
+ * v2.9.0：每日听力目标 —— 统计页顶部进度卡，随时知道当日还差多少分钟达标。
+ * 目标存 localStorage（daily_goal_v1，分钟，0 = 未设定，上限 480）；
+ * 统计页开着且正在播放时每 15 秒原地刷新进度条与文案（不重绘整页、不跳滚动位置）。
+ * ================================================================== */
+var _DAILY_GOAL_KEY = 'daily_goal_v1';
+var _dailyGoalMin = 0;
+try {
+    _dailyGoalMin = parseInt(localStorage.getItem(_DAILY_GOAL_KEY) || '0', 10) || 0;
+    if (_dailyGoalMin < 0) _dailyGoalMin = 0;
+    if (_dailyGoalMin > 480) _dailyGoalMin = 480;
+} catch(e) {}
+
+function stAdjGoal(delta) {
+    var v = _dailyGoalMin + delta;
+    if (v < 0) v = 0;
+    if (v > 480) v = 480;
+    _dailyGoalMin = v;
+    try { localStorage.setItem(_DAILY_GOAL_KEY, String(v)); } catch(e) {}
+    var body = document.getElementById('stBody');
+    var sc = body ? body.scrollTop : 0;
+    renderStats();
+    if (body && sc > 0) body.scrollTop = sc;   // 调整目标不跳回顶部
+}
+
+function _goalProgress() {
+    var todaySec = getDaySec(todayKey());
+    var goalSec  = _dailyGoalMin * 60;
+    var todayMin = Math.floor(todaySec / 60);
+    var pct = 0, status = '', achieved = false;
+    if (_dailyGoalMin <= 0) {
+        status = '未设定目标 · 今日已听 ' + todayMin + ' 分钟（点 ＋ 设定，如 30 分钟）';
+    } else if (todaySec >= goalSec) {
+        achieved = true;
+        pct = 100;
+        var exc = Math.floor((todaySec - goalSec) / 60);
+        status = '🎉 目标已达成！今日已听 ' + todayMin + ' 分钟' + (exc > 0 ? '（超出 ' + exc + ' 分钟）' : '');
+    } else {
+        var remSec = goalSec - todaySec;
+        pct = Math.round(todaySec / goalSec * 100);
+        status = '今日已听 ' + todayMin + ' 分钟 · ' +
+                 (remSec <= 60 ? '还差不到 1 分钟' : '还差 ' + Math.ceil(remSec / 60) + ' 分钟') + '达标';
+    }
+    return { pct: pct, status: status, achieved: achieved };
+}
+
+function _applyGoalCard() {
+    var fill = document.getElementById('stGoalFill');
+    var st   = document.getElementById('stGoalStatus');
+    if (!fill || !st) return;
+    var p = _goalProgress();
+    fill.style.width = p.pct + '%';
+    fill.className = 'st-goal-fill' + (p.achieved ? ' done' : '');
+    st.textContent = p.status;
+}
+
+function _goalCardHtml() {
+    var p = _goalProgress();
+    return '<div class="st-goal-card">' +
+        '<div class="st-goal-head">' +
+            '<div class="st-goal-title">🎯 今日目标</div>' +
+            '<div class="st-goal-ctrl">' +
+                '<button class="st-goal-btn" onclick="stAdjGoal(-5)" aria-label="减少 5 分钟">−</button>' +
+                '<div class="st-goal-val">' + (_dailyGoalMin > 0 ? _dailyGoalMin + ' 分钟' : '未设定') + '</div>' +
+                '<button class="st-goal-btn" onclick="stAdjGoal(5)" aria-label="增加 5 分钟">＋</button>' +
+            '</div>' +
+        '</div>' +
+        '<div class="st-goal-bar"><div class="st-goal-fill' + (p.achieved ? ' done' : '') + '" id="stGoalFill" style="width:' + p.pct + '%"></div></div>' +
+        '<div class="st-goal-status" id="stGoalStatus">' + p.status + '</div>' +
+    '</div>';
+}
+
+setInterval(function() {
+    var sheet = document.getElementById('statsSheet');
+    if (!sheet || sheet.className.indexOf('open') < 0 || !audio || audio.paused) return;
+    _applyGoalCard();   // 边听边看：目标进度悄悄更新
+}, 15000);
+
 function renderStats() {
     var body   = document.getElementById('stBody');
     var dates  = getWeekDates(_stWeekOff);
@@ -5803,6 +5950,8 @@ function renderStats() {
         '</div>' +
         '<div class="st-cumul-sub">打开页面即实时刷新 仅统计音量≥40%的有效播放</div>' +
     '</div>';
+
+    html += _goalCardHtml();   // v2.9.0：每日目标进度卡（今日还差多少分钟达标）
 
     html += checkFictionRatio();
 
@@ -7099,35 +7248,64 @@ function closeCacheManager() {
     document.getElementById('cmSheet').classList.remove('open');
 }
 
+// v2.9.0：离线空间默认只显示音频文件 —— 字幕随音频自动管理（删除音频连带删除
+// 同名字幕），正常使用无需关心字幕；万一有遗漏的字幕，点"显示所有文件"手动清理
+var _cmShowAll = false;
+
+function cmToggleShowAll() {
+    _cmShowAll = !_cmShowAll;
+    _renderCacheList();
+}
+
 function _renderCacheList() {
     var summary = document.getElementById('cmSummary');
     var list    = document.getElementById('cmList');
+    var showBtn = document.getElementById('cmShowAllBtn');
     summary.textContent = '计算中…';
     list.innerHTML = '';
 
     _idbListAll(function(items) {
-        if (items.length === 0) {
-            summary.textContent = '暂无离线缓存';
+        var audioItems = items.filter(function(i) { return !i.isSub; });
+        var subItems   = items.filter(function(i) { return !!i.isSub; });
+        var shown      = _cmShowAll ? items : audioItems;
+
+        if (showBtn) {
+            if (subItems.length > 0) {
+                showBtn.style.display = '';
+                showBtn.textContent = _cmShowAll ? '🎧 仅显示音频'
+                                                  : '📄 显示所有文件（含 ' + subItems.length + ' 个字幕）';
+            } else {
+                showBtn.style.display = 'none';
+            }
+        }
+
+        if (shown.length === 0) {
+            summary.textContent = subItems.length > 0 ? '暂无音频缓存' : '暂无离线缓存';
             list.innerHTML = '<div class="cm-empty">还没有缓存任何音频<br>在文件列表点击 ⬇️ 离线缓存 开始下载</div>';
             return;
         }
 
-        var totalBytes = items.reduce(function(s, i) { return s + i.size; }, 0);
+        var totalBytes = shown.reduce(function(s, i) { return s + i.size; }, 0);
         var totalMB    = (totalBytes / 1048576).toFixed(1);
-        summary.textContent = '共 ' + items.length + ' 个文件，占用 ' + totalMB + ' MB';
+        if (_cmShowAll) {
+            summary.textContent = '共 ' + shown.length + ' 个文件（音频 ' + audioItems.length + ' · 字幕 ' + subItems.length + '），占用 ' + totalMB + ' MB';
+        } else {
+            summary.textContent = '共 ' + audioItems.length + ' 个音频，占用 ' + totalMB + ' MB' +
+                (subItems.length > 0 ? '（另有 ' + subItems.length + ' 个字幕随音频自动管理）' : '');
+        }
 
         var groups = {};
-        items.forEach(function(item) {
+        shown.forEach(function(item) {
             try {
                 var decoded = decodeURIComponent(item.url);
                 var parts = decoded.replace(/^https?:\/\/[^\/]+\//, '').split('/');
                 var folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '根目录';
                 var fname  = parts[parts.length - 1];
                 if (!groups[folder]) groups[folder] = [];
-                groups[folder].push({ url: item.url, name: fname, size: item.size });
+                groups[folder].push({ url: item.url, name: fname, size: item.size, isSub: item.isSub });   // v2.9.0：isSub 透传（修复字幕行被当音频渲染的旧 bug）
             } catch(e) {
                 if (!groups['其他']) groups['其他'] = [];
-                groups['其他'].push({ url: item.url, name: item.url, size: item.size });
+                groups['其他'].push({ url: item.url, name: item.url, size: item.size, isSub: item.isSub });
             }
         });
 
@@ -7200,10 +7378,17 @@ function _renderCacheList() {
 }
 
 function deleteSingleCache(url) {
-    _deleteSiblingSubtitles(url);   // v2.6.0：顺带清理同名字幕（若有）
-    _idbDelete(url, function() {
+    // v2.9.0：按扩展名路由 —— 字幕条目走 subtitles store（旧版误删 audios store，
+    // 字幕根本删不掉）；音频删除才连带清理同名字幕，字幕删除只删自己一个
+    var fn = String(url).split('/').pop() || '';
+    try { fn = decodeURIComponent(fn); } catch(e) {}
+    var ext = (fn.indexOf('.') > -1 ? fn.split('.').pop() : '').toLowerCase();
+    var isSub = SUBTITLE_EXTS.indexOf(ext) >= 0;
+    if (!isSub) _deleteSiblingSubtitles(url);   // v2.6.0：顺带清理同名字幕（若有）
+    _idbDeleteFromStore(isSub ? IDB_SUB_STORE : IDB_STORE, url, function() {
         delete _cacheStatus[url];
-        _notifySWCacheChange(url); // 【修复B4】删除后同步失效 SW 内存幽灵缓存
+        delete _subTextCache[url];
+        _notifySWCacheChange2(url, isSub);   // 【修复B4】删除后按类型同步失效 SW 内存缓存
         _refreshBadge(url);
         _renderCacheList();
         showToast('已删除缓存');
@@ -7211,7 +7396,7 @@ function deleteSingleCache(url) {
 }
 
 function deleteFolderCache(folder) {
-    if (!confirm('删除文件夹"' + folder + '"下的所有缓存？')) return;
+    if (!confirm('删除文件夹"' + folder + '"下的所有缓存（含同目录字幕）？')) return;
     _idbListAll(function(items) {
         var toDelete = items.filter(function(item) {
             try {
