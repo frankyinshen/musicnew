@@ -1,5 +1,5 @@
-/* 英语精听播放器 Service Worker v2.9.2 */
-var CACHE_NAME = 'player-shell-v2.9.2';
+/* 英语精听播放器 Service Worker v2.9.3 */
+var CACHE_NAME = 'player-shell-v2.9.3';
 var SHELL_URL  = '/';
 var IDB_NAME   = 'AudioOfflineCache';
 var IDB_STORE  = 'audios';
@@ -34,8 +34,12 @@ var _AUDIO_MEM_TTL = 60000;          // 60 秒无访问自动释放引用
 function _initAudioKeySet() {
     if (_audioKeysReady) return Promise.resolve();
     return _openIDB().then(function(db) {
-        if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_STORE)) {
-            _audioKeysReady = true;
+        // 【v2.9.3 修复】打开失败（iOS 回收后重开失败/隐私模式等）不标记就绪：
+        // 旧版置 true 会拿空集合把已缓存音频全部同步放行到网络，离线播放失灵。
+        // 保持未就绪 → 下一个音频请求重试初始化（音频分支已有 not-ready 兑底路径）
+        if (!db) return;
+        if (!db.objectStoreNames || !db.objectStoreNames.contains(IDB_STORE)) {
+            _audioKeysReady = true;   // 库确实没有该 store（全新安装）：空集合是事实
             return;
         }
         return new Promise(function(resolve) {
@@ -46,8 +50,10 @@ function _initAudioKeySet() {
                     _audioKeysReady = true;
                     resolve();
                 };
-                req.onerror = function() { _audioKeysReady = true; resolve(); };
-            } catch(e) { _audioKeysReady = true; resolve(); }
+                // 【v2.9.3】事务失败（死句柄等）不置就绪：下个请求重试，
+                // 避免一次瞬时故障把空集合钉死到 SW 生命周期结束
+                req.onerror = function() { resolve(); };
+            } catch(e) { resolve(); }
         });
     });
 }
@@ -245,12 +251,20 @@ function putSubtitleBuffer(url, buffer) {
             delete _swSubCache[_swSubCacheKeys.shift()];
         }
     }
-    _openIDB().then(function(db) {
+    // 【v2.9.3 修复】返回落盘 Promise（事务 oncomplete 才算写完）：
+    // 旧版只到函数同步返回，IDB 写入悬空 —— iOS 提前挂起 SW 时字幕丢失。
+    // 调用方 e.waitUntil 现在能真正保活到落盘完成
+    return _openIDB().then(function(db) {
         if (!db || !db.objectStoreNames || !db.objectStoreNames.contains(IDB_SUB_STORE)) return;
-        try {
-            var tx = db.transaction(IDB_SUB_STORE, 'readwrite');
-            tx.objectStore(IDB_SUB_STORE).put(buffer, key);
-        } catch (err) {}
+        return new Promise(function(resolve) {
+            try {
+                var tx = db.transaction(IDB_SUB_STORE, 'readwrite');
+                tx.objectStore(IDB_SUB_STORE).put(buffer, key);
+                tx.oncomplete = function() { resolve(); };
+                tx.onerror    = function() { resolve(); };
+                tx.onabort    = function() { resolve(); };
+            } catch (err) { resolve(); }
+        });
     });
 }
 
@@ -305,7 +319,7 @@ self.addEventListener('fetch', function(e) {
                             // 【v2.9.1】写入包进 e.waitUntil：SW 保活到落盘完成，不再被提前回收
                             var _writeP = resp.clone().arrayBuffer().then(function(buf) {
                                 if (buf && buf.byteLength > 0 && buf.byteLength <= 524288) {
-                                    putSubtitleBuffer(url, buf);
+                                    return putSubtitleBuffer(url, buf);   // 【v2.9.3】链入落盘 Promise，waitUntil 保活到事务完成
                                 }
                             }).catch(function() {});
                             try { e.waitUntil(_writeP); } catch (err2) {}
